@@ -1,0 +1,16 @@
+# 构建上下文瘦身：只需要各模块 target 下的 jar
+# 注意：不要忽略 deploy/ —— Dockerfile 本身在里面
+.git
+.gitignore
+.idea
+.vscode
+docs
+scripts
+sql
+**/target/classes
+**/target/test-classes
+**/target/generated-sources
+**/target/generated-test-sources
+**/target/surefire-reports
+**/target/maven-status
+**/target/*.jar.original

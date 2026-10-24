@@ -1,0 +1,68 @@
+server:
+  port: 8082
+  shutdown: graceful
+
+spring:
+  application:
+    name: shortlink-admin
+  lifecycle:
+    timeout-per-shutdown-phase: 20s
+
+  datasource:
+    url: jdbc:mysql://${MYSQL_HOST:127.0.0.1}:${MYSQL_PORT:3306}/shortlink?useUnicode=true&characterEncoding=utf8&serverTimezone=Asia/Shanghai&useSSL=false&allowPublicKeyRetrieval=true
+    username: ${MYSQL_USER:root}
+    password: ${MYSQL_PASSWORD:root}
+    hikari:
+      minimum-idle: 5
+      maximum-pool-size: 20
+      connection-timeout: 3000
+      idle-timeout: 600000
+
+  data:
+    redis:
+      host: ${REDIS_HOST:127.0.0.1}
+      port: ${REDIS_PORT:6379}
+      timeout: 200ms
+
+# ---------------------------------------------------------------------
+# 短链业务配置
+# ---------------------------------------------------------------------
+shortlink:
+  # 短链域名兜底：t_domain 查不到时用它拼短链。生产上应由 t_domain 决定
+  short-domain: ${SHORT_DOMAIN:s.example.com}
+  codec:
+    # FPE 密钥。泄露等于短码可预测，生产必须放配置中心并支持轮换。
+    key: ${CODEC_KEY:905197557613}
+  idgen:
+    biz-tag: short_code
+    step: 1000
+  bloom:
+    # 布隆容量：影响误判率，扩容需重建（见设计文档 5.3）
+    expected-elements: ${BLOOM_CAPACITY:10000000}
+
+mybatis-plus:
+  configuration:
+    map-underscore-to-camel-case: true
+  global-config:
+    db-config:
+      logic-delete-field: delFlag
+      logic-delete-value: 1
+      logic-not-delete-value: 0
+
+springdoc:
+  swagger-ui:
+    path: /doc.html
+
+management:
+  endpoints:
+    web:
+      exposure:
+        # prometheus 端点等 V4 引入 micrometer-registry-prometheus 后再加
+        include: health,info,metrics
+  endpoint:
+    health:
+      show-details: always
+
+logging:
+  pattern:
+    level: "%5p [%X{traceId:-}]"

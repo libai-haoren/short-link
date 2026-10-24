@@ -1,0 +1,33 @@
+server:
+  port: 8084
+
+spring:
+  application:
+    name: shortlink-stats-consumer
+  kafka:
+    bootstrap-servers: ${KAFKA_SERVERS:127.0.0.1:9092}
+    consumer:
+      group-id: shortlink-stats
+      # 批量消费：一次 poll 拉多条，配合手动 ack 才能做到“处理完再提交 offset”
+      max-poll-records: 500
+      enable-auto-commit: false
+      auto-offset-reset: earliest
+      key-deserializer: org.apache.kafka.common.serialization.StringDeserializer
+      value-deserializer: org.apache.kafka.common.serialization.StringDeserializer
+    listener:
+      type: batch
+      ack-mode: manual_immediate
+      concurrency: 4
+
+management:
+  endpoints:
+    web:
+      exposure:
+        include: health,info,metrics,prometheus
+  metrics:
+    tags:
+      application: ${spring.application.name}
+
+logging:
+  pattern:
+    level: "%5p [%X{traceId:-}]"

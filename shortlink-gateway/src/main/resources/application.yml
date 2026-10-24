@@ -1,0 +1,42 @@
+server:
+  port: 8080
+
+spring:
+  application:
+    name: shortlink-gateway
+  cloud:
+    nacos:
+      discovery:
+        # 骨架阶段默认关闭，避免没有 Nacos 时启动失败；起好 Nacos 后用 NACOS_ENABLED=true 打开
+        enabled: ${NACOS_ENABLED:false}
+        server-addr: ${NACOS_ADDR:127.0.0.1:8848}
+    gateway:
+      discovery:
+        locator:
+          enabled: false
+      routes:
+        # 管理面。注意 /api/v1/stats/** 在 V3 接入 stats-api 后要单独加一条路由
+        - id: shortlink-admin
+          uri: lb://shortlink-admin
+          predicates:
+            - Path=/api/v1/links/**,/api/v1/groups/**,/api/v1/domains/**,/api/v1/tasks/**,/api/v1/blacklist/**
+          filters:
+            - StripPrefix=0
+      httpclient:
+        connect-timeout: 2000
+        response-timeout: 10s
+
+management:
+  endpoints:
+    web:
+      exposure:
+        include: health,info,metrics,prometheus,gateway
+  endpoint:
+    health:
+      show-details: always
+
+logging:
+  pattern:
+    level: "%5p [%X{traceId:-}]"
+  level:
+    org.springframework.cloud.gateway: INFO

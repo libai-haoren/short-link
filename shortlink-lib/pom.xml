@@ -1,0 +1,34 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<project xmlns="http://maven.apache.org/POM/4.0.0"
+         xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance"
+         xsi:schemaLocation="http://maven.apache.org/POM/4.0.0 https://maven.apache.org/xsd/maven-4.0.0.xsd">
+    <modelVersion>4.0.0</modelVersion>
+
+    <parent>
+        <groupId>com.shortlink</groupId>
+        <artifactId>shortlink</artifactId>
+        <version>1.0.0-SNAPSHOT</version>
+        <relativePath>../pom.xml</relativePath>
+    </parent>
+
+    <artifactId>shortlink-lib</artifactId>
+    <packaging>pom</packaging>
+    <name>shortlink-lib</name>
+    <description>公共库与基础组件（不含可部署服务）</description>
+
+    <modules>
+        <!-- 基础设施：零业务语义 -->
+        <module>shortlink-common-core</module>
+        <module>shortlink-common-web</module>
+        <module>shortlink-common-webflux</module>
+        <module>shortlink-common-cache</module>
+        <module>shortlink-common-mq</module>
+
+        <!-- 领域组件：与短链业务强相关 -->
+        <module>shortlink-component-idgen</module>
+        <module>shortlink-component-codec</module>
+        <module>shortlink-component-bloom</module>
+        <module>shortlink-component-idempotent</module>
+        <module>shortlink-component-ratelimit</module>
+    </modules>
+</project>

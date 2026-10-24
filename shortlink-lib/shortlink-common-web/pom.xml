@@ -1,0 +1,33 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<project xmlns="http://maven.apache.org/POM/4.0.0"
+         xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance"
+         xsi:schemaLocation="http://maven.apache.org/POM/4.0.0 https://maven.apache.org/xsd/maven-4.0.0.xsd">
+    <modelVersion>4.0.0</modelVersion>
+
+    <parent>
+        <groupId>com.shortlink</groupId>
+        <artifactId>shortlink-lib</artifactId>
+        <version>1.0.0-SNAPSHOT</version>
+        <relativePath>../pom.xml</relativePath>
+    </parent>
+
+    <artifactId>shortlink-common-web</artifactId>
+    <name>shortlink-common-web</name>
+    <description>Servlet(MVC) 场景的 Web 公共能力：全局异常、TraceId 过滤器</description>
+
+    <!--
+      注意：本模块含 spring-boot-starter-web（Servlet 栈）。
+      redirect 是 WebFlux，绝对不要依赖本模块，否则会同时引入 Tomcat 与 Netty。
+      依赖树约束由 CI 的 dependency:tree 断言保证。
+    -->
+    <dependencies>
+        <dependency>
+            <groupId>com.shortlink</groupId>
+            <artifactId>shortlink-common-core</artifactId>
+        </dependency>
+        <dependency>
+            <groupId>org.springframework.boot</groupId>
+            <artifactId>spring-boot-starter-web</artifactId>
+        </dependency>
+    </dependencies>
+</project>

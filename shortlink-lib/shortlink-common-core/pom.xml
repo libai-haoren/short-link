@@ -1,0 +1,30 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<project xmlns="http://maven.apache.org/POM/4.0.0"
+         xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance"
+         xsi:schemaLocation="http://maven.apache.org/POM/4.0.0 https://maven.apache.org/xsd/maven-4.0.0.xsd">
+    <modelVersion>4.0.0</modelVersion>
+
+    <parent>
+        <groupId>com.shortlink</groupId>
+        <artifactId>shortlink-lib</artifactId>
+        <version>1.0.0-SNAPSHOT</version>
+        <relativePath>../pom.xml</relativePath>
+    </parent>
+
+    <artifactId>shortlink-common-core</artifactId>
+    <name>shortlink-common-core</name>
+    <description>零第三方依赖：统一返回、错误码、异常、trace、ULID</description>
+
+    <!--
+      刻意不引入任何依赖（含 Spring、Lombok、Jackson）。
+      理由：任何服务引入 common-core 都不会被污染，redirect 的“纯净依赖树”以此为基石。
+      新增依赖前先问：这个类能否放进 common-web / common-cache？
+    -->
+    <dependencies>
+        <dependency>
+            <groupId>org.junit.jupiter</groupId>
+            <artifactId>junit-jupiter</artifactId>
+            <scope>test</scope>
+        </dependency>
+    </dependencies>
+</project>

@@ -1,0 +1,86 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<project xmlns="http://maven.apache.org/POM/4.0.0"
+         xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance"
+         xsi:schemaLocation="http://maven.apache.org/POM/4.0.0 https://maven.apache.org/xsd/maven-4.0.0.xsd">
+    <modelVersion>4.0.0</modelVersion>
+
+    <parent>
+        <groupId>com.shortlink</groupId>
+        <artifactId>shortlink</artifactId>
+        <version>1.0.0-SNAPSHOT</version>
+        <relativePath>../pom.xml</relativePath>
+    </parent>
+
+    <artifactId>shortlink-admin</artifactId>
+    <name>shortlink-admin</name>
+    <description>写侧：短链创建/管理、分组、批量导入、发号、幂等、风控</description>
+
+    <dependencies>
+        <dependency>
+            <groupId>com.shortlink</groupId>
+            <artifactId>shortlink-common-web</artifactId>
+        </dependency>
+        <dependency>
+            <groupId>com.shortlink</groupId>
+            <artifactId>shortlink-common-cache</artifactId>
+        </dependency>
+        <dependency>
+            <groupId>com.shortlink</groupId>
+            <artifactId>shortlink-common-mq</artifactId>
+        </dependency>
+        <dependency>
+            <groupId>com.shortlink</groupId>
+            <artifactId>shortlink-component-idgen</artifactId>
+        </dependency>
+        <dependency>
+            <groupId>com.shortlink</groupId>
+            <artifactId>shortlink-component-codec</artifactId>
+        </dependency>
+        <dependency>
+            <groupId>com.shortlink</groupId>
+            <artifactId>shortlink-component-bloom</artifactId>
+        </dependency>
+        <dependency>
+            <groupId>com.shortlink</groupId>
+            <artifactId>shortlink-component-idempotent</artifactId>
+        </dependency>
+
+        <dependency>
+            <groupId>com.baomidou</groupId>
+            <artifactId>mybatis-plus-spring-boot3-starter</artifactId>
+        </dependency>
+        <dependency>
+            <groupId>com.mysql</groupId>
+            <artifactId>mysql-connector-j</artifactId>
+            <scope>runtime</scope>
+        </dependency>
+        <dependency>
+            <groupId>org.projectlombok</groupId>
+            <artifactId>lombok</artifactId>
+        </dependency>
+        <dependency>
+            <groupId>org.springframework.boot</groupId>
+            <artifactId>spring-boot-starter-actuator</artifactId>
+        </dependency>
+        <!--
+          Nacos 注册中心在 V4 接入（届时 admin/stats/job 统一开启）。
+          V1 只有 admin + redirect 两个进程，直连即可，提前引入只增加启动失败的可能。
+
+          Prometheus registry 同理放到 V4：V1 用 /actuator/health 冒烟就够，
+          没有 Grafana 时引入只会在启动日志里多一行连接失败的噪音。
+        -->
+        <dependency>
+            <groupId>org.springdoc</groupId>
+            <artifactId>springdoc-openapi-starter-webmvc-ui</artifactId>
+        </dependency>
+    </dependencies>
+
+    <build>
+        <plugins>
+            <plugin>
+                <groupId>org.springframework.boot</groupId>
+                <artifactId>spring-boot-maven-plugin</artifactId>
+            </plugin>
+        </plugins>
+    </build>
+</project>

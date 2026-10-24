@@ -1,0 +1,85 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<project xmlns="http://maven.apache.org/POM/4.0.0"
+         xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance"
+         xsi:schemaLocation="http://maven.apache.org/POM/4.0.0 https://maven.apache.org/xsd/maven-4.0.0.xsd">
+    <modelVersion>4.0.0</modelVersion>
+
+    <parent>
+        <groupId>com.shortlink</groupId>
+        <artifactId>shortlink</artifactId>
+        <version>1.0.0-SNAPSHOT</version>
+        <relativePath>../pom.xml</relativePath>
+    </parent>
+
+    <artifactId>shortlink-redirect</artifactId>
+    <name>shortlink-redirect</name>
+    <description>读侧核心：短码解析 + 302 跳转，WebFlux 无 DB 依赖</description>
+
+    <!--
+      ========== 依赖红线（CI 会用 dependency:tree 断言） ==========
+      禁止出现：
+        spring-boot-starter-web        -> Tomcat + Servlet，与 WebFlux 冲突
+        mybatis-plus / mysql-connector -> 破坏“无 DB 依赖”的部署形态
+        shortlink-common-web           -> 同一个原因（它带 starter-web）
+      违反任何一条，这个服务就不再是“可无脑扩容的纯读服务”了。
+    -->
+    <dependencies>
+        <dependency>
+            <groupId>com.shortlink</groupId>
+            <artifactId>shortlink-common-webflux</artifactId>
+        </dependency>
+        <dependency>
+            <groupId>com.shortlink</groupId>
+            <artifactId>shortlink-common-cache</artifactId>
+        </dependency>
+        <dependency>
+            <groupId>com.shortlink</groupId>
+            <artifactId>shortlink-component-codec</artifactId>
+        </dependency>
+        <!--
+          component-bloom / component-ratelimit 已移除：
+          读链路不做布隆（本地布隆依赖 MQ 增量同步，滞后窗口会把真实短链判 404），
+          限流在 V4 接入。需要时再加回来，避免依赖树里躺着用不到的模块。
+        -->
+
+        <dependency>
+            <groupId>org.springframework.boot</groupId>
+            <artifactId>spring-boot-starter-webflux</artifactId>
+        </dependency>
+        <dependency>
+            <groupId>org.springframework.boot</groupId>
+            <artifactId>spring-boot-starter-data-redis-reactive</artifactId>
+        </dependency>
+        <dependency>
+            <groupId>org.springframework.boot</groupId>
+            <artifactId>spring-boot-starter-actuator</artifactId>
+        </dependency>
+        <dependency>
+            <groupId>org.junit.jupiter</groupId>
+            <artifactId>junit-jupiter</artifactId>
+            <scope>test</scope>
+        </dependency>
+        <dependency>
+            <groupId>io.micrometer</groupId>
+            <artifactId>micrometer-registry-prometheus</artifactId>
+            <scope>runtime</scope>
+        </dependency>
+
+        <!-- V3 才需要（投递点击事件），当前留注释避免引入未使用的依赖 -->
+        <!--
+        <dependency>
+            <groupId>org.springframework.kafka</groupId>
+            <artifactId>spring-kafka</artifactId>
+        </dependency>
+        -->
+    </dependencies>
+
+    <build>
+        <plugins>
+            <plugin>
+                <groupId>org.springframework.boot</groupId>
+                <artifactId>spring-boot-maven-plugin</artifactId>
+            </plugin>
+        </plugins>
+    </build>
+</project>

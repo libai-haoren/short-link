@@ -1,0 +1,59 @@
+server:
+  port: 8081
+  shutdown: graceful
+  netty:
+    # 高并发下连接建立要快，但也不能无限挂着
+    connection-timeout: 2s
+
+spring:
+  application:
+    name: shortlink-redirect
+  lifecycle:
+    timeout-per-shutdown-phase: 20s
+
+  data:
+    redis:
+      host: ${REDIS_HOST:127.0.0.1}
+      port: ${REDIS_PORT:6379}
+      # 关键：Redis 超时必须远小于用户可接受 RT。
+      # 超时后走本地缓存或直接 503，绝不能把事件循环线程挂在这里。
+      timeout: 50ms
+      lettuce:
+        pool:
+          max-active: 64
+          max-idle: 32
+          min-idle: 16
+          max-wait: 50ms
+
+management:
+  endpoints:
+    web:
+      exposure:
+        include: health,info,metrics,prometheus
+  endpoint:
+    health:
+      show-details: always
+  metrics:
+    tags:
+      application: ${spring.application.name}
+
+# ---------------------------------------------------------------------
+# 跳转链路配置
+# ---------------------------------------------------------------------
+shortlink:
+  redirect:
+    l1:
+      # 压测时用 L1_ENABLED=false 做"开/关本地缓存"的对比
+      enabled: ${L1_ENABLED:true}
+      # 10 万条 × 约 800B ≈ 80MB，按堆 1/8 估算
+      max-size: 100000
+      # 也是"改了短链多久生效"的上限：没有 MQ 失效前，只能等它自然过期
+      ttl: 10m
+      jitter: 2m
+
+logging:
+  pattern:
+    level: "%5p [%X{traceId:-}]"
+  level:
+    # 跳转是超高频路径，默认不开 DEBUG，否则日志本身就是瓶颈
+    com.shortlink.redirect: INFO

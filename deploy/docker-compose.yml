@@ -1,0 +1,153 @@
+# =====================================================================
+#  ShortLink 本地一键部署
+#
+#  用法：
+#    mvn -DskipTests package                 # 先在宿主机打出 jar
+#    docker compose -f deploy/docker-compose.yml up -d --build
+#    docker compose -f deploy/docker-compose.yml down -v
+#
+#  注意：sql/ 下的初始化脚本只在「数据卷为空」时执行。
+#  改了 DDL 必须 down -v 重建，否则改动不会生效。
+# =====================================================================
+name: shortlink
+
+services:
+
+  # ------------------------------------------------------------------
+  # MySQL：业务库 + 统计库
+  # ------------------------------------------------------------------
+  mysql:
+    image: mysql:8.0
+    container_name: shortlink-mysql
+    environment:
+      MYSQL_ROOT_PASSWORD: ${MYSQL_ROOT_PASSWORD:-shortlink}
+      TZ: Asia/Shanghai
+    command:
+      - --character-set-server=utf8mb4
+      - --collation-server=utf8mb4_0900_ai_ci
+      - --default-time-zone=+08:00
+      # 本地开发放宽慢查询阈值，方便发现问题
+      - --slow_query_log=1
+      - --long_query_time=0.5
+    ports:
+      - "${MYSQL_PORT:-3306}:3306"
+    volumes:
+      - mysql-data:/var/lib/mysql
+      # 只在首次初始化时按文件名顺序执行
+      - ../sql/01-schema.sql:/docker-entrypoint-initdb.d/01-schema.sql:ro
+      - ../sql/02-init-data.sql:/docker-entrypoint-initdb.d/02-init-data.sql:ro
+    healthcheck:
+      # 初始化脚本跑完后官方镜像才会真正监听端口，所以 healthy 即代表表已建好
+      test: ["CMD", "mysqladmin", "ping", "-h", "127.0.0.1", "-uroot", "-p${MYSQL_ROOT_PASSWORD:-shortlink}"]
+      interval: 5s
+      timeout: 3s
+      retries: 30
+      start_period: 20s
+    networks: [shortlink-net]
+
+  # ------------------------------------------------------------------
+  # Redis：redirect 的唯一数据源 + 发号器兜底
+  # ------------------------------------------------------------------
+  redis:
+    image: redis:7.2-alpine
+    container_name: shortlink-redis
+    command:
+      - redis-server
+      - --appendonly
+      - "no"
+      - --maxmemory
+      - 512mb
+      # 短链缓存可以丢（能从 MySQL 重建），所以用 LRU 而不是报错
+      - --maxmemory-policy
+      - allkeys-lru
+    ports:
+      - "${REDIS_PORT:-6379}:6379"
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 5s
+      timeout: 3s
+      retries: 20
+    networks: [shortlink-net]
+
+  # ------------------------------------------------------------------
+  # admin：写侧，需要 MySQL + Redis
+  # ------------------------------------------------------------------
+  admin:
+    build:
+      context: ..
+      dockerfile: deploy/app/Dockerfile
+      args:
+        MODULE: shortlink-admin
+    image: shortlink/admin:local
+    container_name: shortlink-admin
+    environment:
+      MYSQL_HOST: mysql
+      MYSQL_PORT: 3306
+      MYSQL_USER: root
+      MYSQL_PASSWORD: ${MYSQL_ROOT_PASSWORD:-shortlink}
+      REDIS_HOST: redis
+      REDIS_PORT: 6379
+      SHORT_DOMAIN: ${SHORT_DOMAIN:-s.example.com}
+      CODEC_KEY: ${CODEC_KEY:-905197557613}
+      JAVA_OPTS: ${ADMIN_JAVA_OPTS:--Xms256m -Xmx512m -XX:+UseZGC}
+      TZ: Asia/Shanghai
+    ports:
+      - "${ADMIN_PORT:-8082}:8082"
+    depends_on:
+      mysql:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+    healthcheck:
+      test: ["CMD-SHELL", "wget -qO- http://127.0.0.1:8082/actuator/health | grep -q '\"status\":\"UP\"'"]
+      interval: 10s
+      timeout: 3s
+      retries: 12
+      start_period: 40s
+    stop_grace_period: 30s
+    logging:
+      driver: json-file
+      options: { max-size: "10m", max-file: "3" }
+    networks: [shortlink-net]
+
+  # ------------------------------------------------------------------
+  # redirect：读侧，只依赖 Redis（无 MySQL）
+  # ------------------------------------------------------------------
+  redirect:
+    build:
+      context: ..
+      dockerfile: deploy/app/Dockerfile
+      args:
+        MODULE: shortlink-redirect
+    image: shortlink/redirect:local
+    container_name: shortlink-redirect
+    environment:
+      REDIS_HOST: redis
+      REDIS_PORT: 6379
+      # 压测/联调时可关掉，做"有无本地缓存"的对比
+      L1_ENABLED: ${L1_ENABLED:-true}
+      JAVA_OPTS: ${REDIRECT_JAVA_OPTS:--Xms256m -Xmx512m -XX:+UseZGC}
+      TZ: Asia/Shanghai
+    ports:
+      - "${REDIRECT_PORT:-8081}:8081"
+    depends_on:
+      redis:
+        condition: service_healthy
+    healthcheck:
+      test: ["CMD-SHELL", "wget -qO- http://127.0.0.1:8081/ping | grep -q pong"]
+      interval: 10s
+      timeout: 3s
+      retries: 12
+      start_period: 40s
+    stop_grace_period: 30s
+    logging:
+      driver: json-file
+      options: { max-size: "10m", max-file: "3" }
+    networks: [shortlink-net]
+
+volumes:
+  mysql-data:
+
+networks:
+  shortlink-net:
+    driver: bridge
