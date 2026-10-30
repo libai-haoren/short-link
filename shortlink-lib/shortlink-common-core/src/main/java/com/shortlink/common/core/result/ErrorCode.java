@@ -19,6 +19,7 @@ public enum ErrorCode {
     FORBIDDEN(40301, 403, "无权限"),
     LINK_NOT_FOUND(40401, 404, "短链不存在"),
     LINK_EXISTS(40901, 409, "短链已存在"),
+    IDEMPOTENT_IN_PROGRESS(40902, 409, "相同请求正在处理中，请稍后重试"),
     LINK_EXPIRED(41001, 410, "短链已过期"),
     LINK_DISABLED(41002, 410, "短链已禁用"),
     RATE_LIMITED(42901, 429, "请求过于频繁"),

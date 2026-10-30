@@ -23,6 +23,7 @@
         <module>shortlink-common-webflux</module>
         <module>shortlink-common-cache</module>
         <module>shortlink-common-mq</module>
+        <module>shortlink-common-jwt</module>
 
         <!-- 领域组件：与短链业务强相关 -->
         <module>shortlink-component-idgen</module>

@@ -13,6 +13,7 @@ import org.springframework.web.bind.MethodArgumentNotValidException;
 import org.springframework.web.bind.MissingServletRequestParameterException;
 import org.springframework.web.bind.annotation.ExceptionHandler;
 import org.springframework.web.bind.annotation.RestControllerAdvice;
+import org.springframework.web.method.annotation.MethodArgumentTypeMismatchException;
 
 /**
  * 全局异常处理（Servlet 栈）。
@@ -63,6 +64,17 @@ public class GlobalExceptionHandler {
     @ExceptionHandler(IllegalArgumentException.class)
     public ResponseEntity<Result<Void>> handleIllegalArgument(IllegalArgumentException ex) {
         return badRequest(ex.getMessage());
+    }
+
+    /**
+     * 查询参数类型不对（如 {@code ?size=abc}）。
+     *
+     * <p>不处理的话会落到兜底的 Exception 分支返回 500——参数错误报成服务端错误，
+     * 既误导调用方，也会污染 5xx 告警。Spring MVC 不会把它识别成 bind 异常，必须单独接。</p>
+     */
+    @ExceptionHandler(MethodArgumentTypeMismatchException.class)
+    public ResponseEntity<Result<Void>> handleTypeMismatch(MethodArgumentTypeMismatchException ex) {
+        return badRequest("参数 " + ex.getName() + " 格式不正确");
     }
 
     @ExceptionHandler(Exception.class)

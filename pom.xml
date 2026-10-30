@@ -40,6 +40,7 @@
         <caffeine.version>3.1.8</caffeine.version>
         <springdoc.version>2.6.0</springdoc.version>
         <lombok.version>1.18.32</lombok.version>
+        <jjwt.version>0.12.6</jjwt.version>
 
         <maven-compiler-plugin.version>3.13.0</maven-compiler-plugin.version>
         <maven-surefire-plugin.version>3.2.5</maven-surefire-plugin.version>
@@ -103,6 +104,11 @@
             </dependency>
             <dependency>
                 <groupId>com.shortlink</groupId>
+                <artifactId>shortlink-common-jwt</artifactId>
+                <version>${project.version}</version>
+            </dependency>
+            <dependency>
+                <groupId>com.shortlink</groupId>
                 <artifactId>shortlink-component-idgen</artifactId>
                 <version>${project.version}</version>
             </dependency>
@@ -148,6 +154,25 @@
                 <artifactId>lombok</artifactId>
                 <version>${lombok.version}</version>
                 <scope>provided</scope>
+            </dependency>
+
+            <!-- JWT：api 编译期可见，impl/jackson 只在运行期需要 -->
+            <dependency>
+                <groupId>io.jsonwebtoken</groupId>
+                <artifactId>jjwt-api</artifactId>
+                <version>${jjwt.version}</version>
+            </dependency>
+            <dependency>
+                <groupId>io.jsonwebtoken</groupId>
+                <artifactId>jjwt-impl</artifactId>
+                <version>${jjwt.version}</version>
+                <scope>runtime</scope>
+            </dependency>
+            <dependency>
+                <groupId>io.jsonwebtoken</groupId>
+                <artifactId>jjwt-jackson</artifactId>
+                <version>${jjwt.version}</version>
+                <scope>runtime</scope>
             </dependency>
         </dependencies>
     </dependencyManagement>

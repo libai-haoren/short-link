@@ -17,6 +17,14 @@ public final class HeaderConstants {
     /** 幂等键，写接口使用。 */
     public static final String IDEMPOTENCY_KEY = "Idempotency-Key";
 
+    /**
+     * 网关解析出的客户端真实 IP，透传给下游用于日志与风控。
+     *
+     * <p>与 {@code X-Forwarded-For} 的区别：XFF 是客户端可写的外部头，
+     * 这个是网关<b>覆盖写入</b>的，下游可以信任。</p>
+     */
+    public static final String CLIENT_IP = "X-Client-Ip";
+
     private HeaderConstants() {
     }
 }

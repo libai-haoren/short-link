@@ -59,6 +59,32 @@ public final class CacheKeys {
         return PREFIX + "pv:" + shortCode + ":" + yyyyMMdd;
     }
 
+    /**
+     * 限流型短链的已访问计数（{@code t_short_link.max_click}）。
+     *
+     * <p>只有配了 maxClick 的短链才会产生这个 key，普通短链完全不受影响。</p>
+     */
+    public static String clickQuota(String shortCode) {
+        return PREFIX + "click:max:" + shortCode;
+    }
+
+    /**
+     * 实时 PV（String，INCR）。
+     *
+     * <p>生产端是 stats-consumer，消费端是 stats-api。两边必须用同一个函数生成 key，
+     * 否则会出现"写得进去查不出来"这种最难查的问题——所以不各写一份字符串拼接。</p>
+     *
+     * @param date {@code yyyy-MM-dd}
+     */
+    public static String statsPv(String shortCode, String date) {
+        return PREFIX + "stats:pv:" + shortCode + ":" + date;
+    }
+
+    /** 实时 UV（HyperLogLog，PFADD/PFCOUNT）。 */
+    public static String statsUv(String shortCode, String date) {
+        return PREFIX + "stats:uv:" + shortCode + ":" + date;
+    }
+
     /** 实时 UV（HyperLogLog，误差约 0.81%）。 */
     public static String uv(String shortCode, String yyyyMMdd) {
         return PREFIX + "uv:" + shortCode + ":" + yyyyMMdd;
