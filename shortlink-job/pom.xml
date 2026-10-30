@@ -13,7 +13,7 @@
 
     <artifactId>shortlink-job</artifactId>
     <name>shortlink-job</name>
-    <description>定时任务：过期清理、缓存预热、统计对账、批量导入补偿</description>
+    <description>定时任务：过期短链清理、审计归档、统计对账、缓存预热</description>
 
     <dependencies>
         <dependency>
@@ -24,9 +24,14 @@
             <groupId>com.shortlink</groupId>
             <artifactId>shortlink-common-cache</artifactId>
         </dependency>
+        <!--
+          用 JdbcTemplate 而不是 MyBatis-Plus：定时任务只有几条明确的 SQL，
+          分批扫描和 IN 批量删除用原生 SQL 更直观，
+          也避免为了几行查询往 job 模块复制一份实体。
+        -->
         <dependency>
-            <groupId>com.baomidou</groupId>
-            <artifactId>mybatis-plus-spring-boot3-starter</artifactId>
+            <groupId>org.springframework.boot</groupId>
+            <artifactId>spring-boot-starter-jdbc</artifactId>
         </dependency>
         <dependency>
             <groupId>com.mysql</groupId>
@@ -38,13 +43,14 @@
             <artifactId>spring-boot-starter-actuator</artifactId>
         </dependency>
         <dependency>
-            <groupId>com.alibaba.cloud</groupId>
-            <artifactId>spring-cloud-starter-alibaba-nacos-discovery</artifactId>
-        </dependency>
-        <dependency>
             <groupId>io.micrometer</groupId>
             <artifactId>micrometer-registry-prometheus</artifactId>
             <scope>runtime</scope>
+        </dependency>
+        <dependency>
+            <groupId>org.junit.jupiter</groupId>
+            <artifactId>junit-jupiter</artifactId>
+            <scope>test</scope>
         </dependency>
     </dependencies>
 

@@ -1,26 +1,60 @@
 server:
-  port: 8085
+  # 8085 已被 stats-api 占用，job 用 8086
+  port: 8086
 
 spring:
   application:
     name: shortlink-job
+
   datasource:
     url: jdbc:mysql://${MYSQL_HOST:127.0.0.1}:${MYSQL_PORT:3306}/shortlink?useUnicode=true&characterEncoding=utf8&serverTimezone=Asia/Shanghai&useSSL=false&allowPublicKeyRetrieval=true
     username: ${MYSQL_USER:root}
     password: ${MYSQL_PASSWORD:root}
     hikari:
-      maximum-pool-size: 5
+      # 任务会跑批量更新，但不需要很多连接；4 个足够，多了反而给 DB 加压力
+      maximum-pool-size: 4
+      initialization-fail-timeout: -1
+
   data:
     redis:
       host: ${REDIS_HOST:127.0.0.1}
       port: ${REDIS_PORT:6379}
-      timeout: 500ms
+      timeout: 200ms
+      connect-timeout: 1s
+
+  task:
+    scheduling:
+      pool:
+        # 只有两个任务，2 个线程足够；多了会让"同一时刻只跑一个"的假设失效
+        size: 2
+      thread-name-prefix: shortlink-job-
+
+shortlink:
+  job:
+    # 关掉后 @Scheduled 仍然注册，但 runLocked 会直接跳过（手动触发也跳过）
+    enabled: ${JOB_ENABLED:true}
+    # 过期后再保留 30 天才清理，留出误操作恢复窗口
+    retention-days: ${JOB_RETENTION_DAYS:30}
+    batch-size: ${JOB_BATCH_SIZE:500}
+    # 单次最多 200 批（10 万行），跑不完下次继续，避免一次占用 DB 太久
+    max-batches: ${JOB_MAX_BATCHES:200}
+    audit-retention-days: ${JOB_AUDIT_RETENTION_DAYS:180}
+    # 必须大于任务最长执行时间，否则任务没跑完锁就过期了
+    lock-ttl: 5m
+    cleanup-cron: "0 30 3 * * ?"
+    audit-cron: "0 0 4 * * ?"
 
 management:
   endpoints:
     web:
       exposure:
         include: health,info,metrics,prometheus
+  endpoint:
+    health:
+      show-details: always
+  metrics:
+    tags:
+      application: ${spring.application.name}
 
 logging:
   pattern:
