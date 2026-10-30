@@ -21,17 +21,27 @@
             <artifactId>shortlink-common-core</artifactId>
         </dependency>
         <dependency>
+            <groupId>com.shortlink</groupId>
+            <artifactId>shortlink-common-jwt</artifactId>
+        </dependency>
+        <dependency>
+            <groupId>com.shortlink</groupId>
+            <artifactId>shortlink-common-webflux</artifactId>
+        </dependency>
+        <!-- IP 黑名单（IpBlacklist）住在 common-cache 里，与 redirect 共用同一份实现 -->
+        <dependency>
+            <groupId>com.shortlink</groupId>
+            <artifactId>shortlink-common-cache</artifactId>
+        </dependency>
+        <dependency>
             <groupId>org.springframework.cloud</groupId>
             <artifactId>spring-cloud-starter-gateway</artifactId>
         </dependency>
-        <dependency>
-            <groupId>org.springframework.cloud</groupId>
-            <artifactId>spring-cloud-starter-loadbalancer</artifactId>
-        </dependency>
-        <dependency>
-            <groupId>com.alibaba.cloud</groupId>
-            <artifactId>spring-cloud-starter-alibaba-nacos-discovery</artifactId>
-        </dependency>
+        <!--
+          服务发现（Nacos）与 LoadBalancer 暂不引入：本地没有注册中心可跑，
+          lb:// 路由反而会让网关启动后不可用。路由地址改成可配置的静态 URI，
+          接入注册中心后把 ADMIN_URI 换成 lb://shortlink-admin 即可，代码零改动。
+        -->
         <dependency>
             <groupId>org.springframework.boot</groupId>
             <artifactId>spring-boot-starter-data-redis-reactive</artifactId>

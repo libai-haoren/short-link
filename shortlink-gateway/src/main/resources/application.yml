@@ -5,26 +5,52 @@ spring:
   application:
     name: shortlink-gateway
   cloud:
-    nacos:
-      discovery:
-        # 骨架阶段默认关闭，避免没有 Nacos 时启动失败；起好 Nacos 后用 NACOS_ENABLED=true 打开
-        enabled: ${NACOS_ENABLED:false}
-        server-addr: ${NACOS_ADDR:127.0.0.1:8848}
     gateway:
-      discovery:
-        locator:
-          enabled: false
       routes:
-        # 管理面。注意 /api/v1/stats/** 在 V3 接入 stats-api 后要单独加一条路由
-        - id: shortlink-admin
-          uri: lb://shortlink-admin
+        # 顺序有意义：Spring Cloud Gateway 按声明顺序匹配，先命中的生效。
+        # 所以更具体的前缀（/api/v1/stats/**）必须排在 /api/v1/** 之前，
+        # 否则统计请求会被 admin 那条宽路由吃掉，表现为 admin 返回 500。
+        - id: shortlink-stats-api
+          uri: ${STATS_URI:http://127.0.0.1:8085}
           predicates:
-            - Path=/api/v1/links/**,/api/v1/groups/**,/api/v1/domains/**,/api/v1/tasks/**,/api/v1/blacklist/**
-          filters:
-            - StripPrefix=0
+            - Path=/api/v1/stats/**
+        # 管理面其余接口。用静态 URI 而不是 lb://：本地没有注册中心，
+        # 接入 Nacos 后把 ADMIN_URI 换成 lb://shortlink-admin 即可
+        - id: shortlink-admin
+          uri: ${ADMIN_URI:http://127.0.0.1:8082}
+          predicates:
+            - Path=/api/v1/**
       httpclient:
         connect-timeout: 2000
         response-timeout: 10s
+  data:
+    redis:
+      host: ${REDIS_HOST:127.0.0.1}
+      port: ${REDIS_PORT:6379}
+      # 限流是每个请求都要过的一次 Redis 调用，超时必须短
+      timeout: 50ms
+
+# ---------------------------------------------------------------------
+# 网关自身的鉴权与限流
+# ---------------------------------------------------------------------
+shortlink:
+  jwt:
+    # 必须与 admin 完全一致，否则验签全失败
+    secret: ${JWT_SECRET:shortlink-dev-secret-please-change-in-production-0123456789}
+    issuer: shortlink
+    ttl: 2h
+  gateway:
+    auth:
+      enabled: ${AUTH_ENABLED:true}
+      # 只放行登录：/me 这类接口必须带 token 才能拿到网关注入的身份头。
+      # 写成 /api/v1/auth/** 会把 /me 也放行，导致它永远拿不到 X-User-Id。
+      whitelist:
+        - /api/v1/auth/login
+        - /actuator/**
+    rate-limit:
+      enabled: ${RATE_LIMIT_ENABLED:true}
+      capacity: ${RATE_LIMIT_CAPACITY:600}
+      window: 60s
 
 management:
   endpoints:
@@ -40,3 +66,4 @@ logging:
     level: "%5p [%X{traceId:-}]"
   level:
     org.springframework.cloud.gateway: INFO
+    com.shortlink.gateway: INFO
