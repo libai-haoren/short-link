@@ -8,6 +8,17 @@ server:
 spring:
   application:
     name: shortlink-redirect
+  # Kafka 只在统计开启（shortlink.redirect.stats.enabled=true）时才会真正发消息。
+  # max.block.ms 必须调小：默认 60 秒，Kafka 不可用时发送线程会一直卡住，队列迅速堆满。
+  kafka:
+    bootstrap-servers: ${KAFKA_SERVERS:127.0.0.1:9092}
+    producer:
+      key-serializer: org.apache.kafka.common.serialization.StringSerializer
+      value-serializer: org.apache.kafka.common.serialization.StringSerializer
+      properties:
+        max.block.ms: 500
+        delivery.timeout.ms: 5000
+        request.timeout.ms: 3000
   lifecycle:
     timeout-per-shutdown-phase: 20s
 
@@ -18,6 +29,11 @@ spring:
       # 关键：Redis 超时必须远小于用户可接受 RT。
       # 超时后走本地缓存或直接 503，绝不能把事件循环线程挂在这里。
       timeout: 50ms
+      # 建立连接单独给 1s。
+      # 踩过的坑：容器冷启动时 redis 主机名可能还没解析出来，
+      # 用 50ms 的"命令超时"去卡建连会直接抛 RedisConnectionException 让应用起不来。
+      # 命令超时和建连超时是两个语义，不能共用一个值。
+      connect-timeout: 1s
       lettuce:
         pool:
           max-active: 64
@@ -47,10 +63,33 @@ shortlink:
       enabled: ${L1_ENABLED:true}
       # 10 万条 × 约 800B ≈ 80MB，按堆 1/8 估算
       max-size: 100000
-      # 也是"改了短链多久生效"的上限：没有 MQ 失效前，只能等它自然过期
+      # 改链/封禁靠失效通知秒级生效，TTL 只是最后一道保险
       ttl: 10m
       jitter: 2m
-
+    cache-sync:
+      # 关掉后既不订阅也不轮询，用于压测时单独衡量失效通道的开销
+      enabled: ${CACHE_SYNC_ENABLED:true}
+      # Pub/Sub 丢消息时的兜底：每秒比对一次全局版本号
+      version-poll-interval: 1s
+    rate-limit:
+      enabled: ${RATE_LIMIT_ENABLED:true}
+      # 实例总入口：保护本机容量，超过这个 QPS 直接 429
+      global-capacity: ${GLOBAL_QPS:100000}
+      # 单个短码的放行量（热点保护）。测试时可以调低来触发 429
+      per-code-capacity: ${PER_CODE_CAPACITY:500}
+      per-code-window: 1s
+    blacklist:
+      enabled: ${BLACKLIST_ENABLED:true}
+      # 拉黑后最长 2s 生效（全量快照刷新，不是每请求查 Redis）
+      refresh-interval: 2s
+    stats:
+      # 埋点开关。默认关闭：本地没有 Kafka 时不该产生无意义的发送尝试。
+      # 开启后跳转仍不受影响——队列满就丢，Kafka 挂只会让统计丢数据，不会让用户跳不过去。
+      enabled: ${STATS_ENABLED:false}
+      queue-size: 8192
+      batch-size: 200
+      # IP 哈希盐，生产必须放配置中心；泄露等于 IP 可被彩虹表反查
+      ip-salt: ${IP_HASH_SALT:shortlink-dev-salt}
 logging:
   pattern:
     level: "%5p [%X{traceId:-}]"

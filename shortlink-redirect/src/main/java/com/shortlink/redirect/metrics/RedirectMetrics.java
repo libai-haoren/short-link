@@ -26,6 +26,8 @@ public class RedirectMetrics {
     private final Counter cacheMiss;
     private final Counter redisErrors;
     private final Counter corruptEntries;
+    private final Counter evictByMessage;
+    private final Counter evictByVersion;
     private final Timer latency;
 
     public RedirectMetrics(MeterRegistry registry) {
@@ -44,6 +46,14 @@ public class RedirectMetrics {
                 .register(registry);
         this.corruptEntries = Counter.builder("shortlink.redirect.corrupt.total")
                 .description("缓存数据损坏次数，非零即需告警")
+                .register(registry);
+        this.evictByMessage = Counter.builder("shortlink.cache.evict.total")
+                .description("本地缓存失效次数")
+                .tag("source", "pubsub")
+                .register(registry);
+        this.evictByVersion = Counter.builder("shortlink.cache.evict.total")
+                .description("本地缓存失效次数")
+                .tag("source", "version")
                 .register(registry);
         this.latency = Timer.builder("shortlink.redirect.latency")
                 .description("跳转端到端耗时")
@@ -68,6 +78,16 @@ public class RedirectMetrics {
 
     public void recordCorrupt() {
         corruptEntries.increment();
+    }
+
+    /**
+     * 记录一次本地缓存失效。
+     *
+     * @param fromVersionPoll true 表示由版本号兜底触发（意味着 Pub/Sub 可能丢过消息，
+     *                        这个值持续增长说明订阅链路有问题）
+     */
+    public void cacheEvicted(boolean fromVersionPoll) {
+        (fromVersionPoll ? evictByVersion : evictByMessage).increment();
     }
 
     public void recordLatency(long nanos) {

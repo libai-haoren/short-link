@@ -69,6 +69,10 @@ public final class ErrorPage {
                 title = "链接已过期";
                 message = "该短链接已超过有效期。";
             }
+            case QUOTA_EXCEEDED -> {
+                title = "访问次数已达上限";
+                message = "该短链接的访问次数已用完。";
+            }
             case UNAVAILABLE -> {
                 title = "服务暂时不可用";
                 message = "请稍后重试。";
@@ -86,10 +90,30 @@ public final class ErrorPage {
                 .getBytes(StandardCharsets.UTF_8);
     }
 
+    /**
+     * 403：IP 在黑名单里。
+     *
+     * <p>与"链接已停用"共用 403 但文案不同：这里是访问者被限制，不是链接失效，
+     * 混在一起会让被误封的用户以为是链接坏了。</p>
+     */
+    public static byte[] renderForbidden() {
+        return render("访问受限", 403, "当前网络环境的访问请求被拒绝。");
+    }
+
+    /** 429：触发本地限流。 */
+    public static byte[] renderTooManyRequests() {
+        return render("请求过于频繁", 429, "请稍后再试。");
+    }
+
+    private static byte[] render(String title, int status, String message) {
+        return String.format(TEMPLATE, title, status, title, message)
+                .getBytes(StandardCharsets.UTF_8);
+    }
+
     /** HTTP 状态码映射，渲染与响应头共用同一张表，避免两处不一致。 */
     public static int statusOf(Outcome outcome) {
         return switch (outcome) {
-            case DISABLED -> 403;
+            case DISABLED, QUOTA_EXCEEDED -> 403;
             case EXPIRED -> 410;
             case UNAVAILABLE -> 503;
             case INVALID, NOT_FOUND -> 404;

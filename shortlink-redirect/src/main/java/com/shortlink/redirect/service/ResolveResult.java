@@ -25,6 +25,8 @@ public record ResolveResult(Outcome outcome, String location) {
         DISABLED,
         /** 已过期 */
         EXPIRED,
+        /** 达到最大点击次数（限流型短链） */
+        QUOTA_EXCEEDED,
         /** 依赖不可用或数据损坏 */
         UNAVAILABLE
     }
@@ -47,6 +49,10 @@ public record ResolveResult(Outcome outcome, String location) {
 
     public static ResolveResult expired() {
         return new ResolveResult(Outcome.EXPIRED, null);
+    }
+
+    public static ResolveResult quotaExceeded() {
+        return new ResolveResult(Outcome.QUOTA_EXCEEDED, null);
     }
 
     public static ResolveResult unavailable() {

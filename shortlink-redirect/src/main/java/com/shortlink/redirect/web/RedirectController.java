@@ -3,14 +3,13 @@ package com.shortlink.redirect.web;
 import com.shortlink.redirect.metrics.RedirectMetrics;
 import com.shortlink.redirect.service.LinkResolver;
 import com.shortlink.redirect.service.ResolveResult;
-import com.shortlink.redirect.service.ResolveResult.Outcome;
+import com.shortlink.redirect.stats.ClickTracker;
 import org.springframework.http.HttpHeaders;
 import org.springframework.http.HttpStatus;
-import org.springframework.http.MediaType;
-import org.springframework.http.server.reactive.ServerHttpResponse;
 import org.springframework.web.bind.annotation.GetMapping;
 import org.springframework.web.bind.annotation.PathVariable;
 import org.springframework.web.bind.annotation.RestController;
+import org.springframework.web.server.ServerWebExchange;
 import reactor.core.publisher.Mono;
 
 import java.net.URI;
@@ -24,18 +23,21 @@ import java.net.URI;
  *
  * <p>副作用：{@code /actuator}（单段路径）会被本方法吞掉并返回 404 HTML。
  * 健康检查用两段的 {@code /actuator/health}，不受影响。</p>
+ *
+ * <p>黑名单与限流在 {@code WebFilter} 里就短路了，走不到这里；
+ * 所以本类只关心"解析 → 埋点 → 跳转/错误页"。</p>
  */
 @RestController
 public class RedirectController {
 
-    private static final MediaType HTML_UTF8 = MediaType.valueOf("text/html;charset=UTF-8");
-
     private final LinkResolver linkResolver;
     private final RedirectMetrics metrics;
+    private final ClickTracker clickTracker;
 
-    public RedirectController(LinkResolver linkResolver, RedirectMetrics metrics) {
+    public RedirectController(LinkResolver linkResolver, RedirectMetrics metrics, ClickTracker clickTracker) {
         this.linkResolver = linkResolver;
         this.metrics = metrics;
+        this.clickTracker = clickTracker;
     }
 
     @GetMapping("/ping")
@@ -44,19 +46,24 @@ public class RedirectController {
     }
 
     @GetMapping("/{code}")
-    public Mono<Void> redirect(@PathVariable String code, ServerHttpResponse response) {
+    public Mono<Void> redirect(@PathVariable String code, ServerWebExchange exchange) {
         long startNanos = System.nanoTime();
         return linkResolver.resolve(code)
-                .flatMap(result -> respond(result, response))
+                .flatMap(result -> respond(result, exchange, code))
                 .doFinally(signalType -> metrics.recordLatency(System.nanoTime() - startNanos));
     }
 
-    private Mono<Void> respond(ResolveResult result, ServerHttpResponse response) {
+    private Mono<Void> respond(ResolveResult result, ServerWebExchange exchange, String shortCode) {
         ResolveResult effective = ensureValidLocation(result);
         metrics.recordOutcome(effective.outcome());
-        return effective.isFound()
-                ? writeRedirect(effective.location(), response)
-                : writeErrorPage(effective.outcome(), response);
+        if (effective.isFound()) {
+            // 只有真正要跳转才记一次点击；埋点是入队操作，不会阻塞也不会抛异常
+            clickTracker.track(exchange, shortCode);
+            return writeRedirect(effective.location(), exchange);
+        }
+        return HtmlResponses.write(exchange,
+                HttpStatus.valueOf(ErrorPage.statusOf(effective.outcome())),
+                ErrorPage.render(effective.outcome()));
     }
 
     /**
@@ -75,7 +82,8 @@ public class RedirectController {
         }
     }
 
-    private Mono<Void> writeRedirect(String location, ServerHttpResponse response) {
+    private Mono<Void> writeRedirect(String location, ServerWebExchange exchange) {
+        var response = exchange.getResponse();
         HttpHeaders headers = response.getHeaders();
         response.setStatusCode(HttpStatus.FOUND);
         headers.setLocation(URI.create(location));
@@ -83,16 +91,5 @@ public class RedirectController {
         headers.setCacheControl("no-store");
         headers.setContentLength(0);
         return response.setComplete();
-    }
-
-    private Mono<Void> writeErrorPage(Outcome outcome, ServerHttpResponse response) {
-        byte[] body = ErrorPage.render(outcome);
-        HttpHeaders headers = response.getHeaders();
-        response.setStatusCode(HttpStatus.valueOf(ErrorPage.statusOf(outcome)));
-        headers.setContentType(HTML_UTF8);
-        headers.setContentLength(body.length);
-        headers.setCacheControl("no-store");
-        headers.set("X-Content-Type-Options", "nosniff");
-        return response.writeWith(Mono.just(response.bufferFactory().wrap(body)));
     }
 }

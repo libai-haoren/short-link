@@ -34,13 +34,21 @@
         </dependency>
         <dependency>
             <groupId>com.shortlink</groupId>
+            <artifactId>shortlink-common-mq</artifactId>
+        </dependency>
+        <dependency>
+            <groupId>com.shortlink</groupId>
             <artifactId>shortlink-component-codec</artifactId>
         </dependency>
         <!--
-          component-bloom / component-ratelimit 已移除：
-          读链路不做布隆（本地布隆依赖 MQ 增量同步，滞后窗口会把真实短链判 404），
-          限流在 V4 接入。需要时再加回来，避免依赖树里躺着用不到的模块。
+          V4 接入本地限流后重新引入：实例总入口 + 单短码两个令牌桶。
+          component-bloom 仍然不引入——读链路不做布隆（本地布隆依赖增量同步，
+          滞后窗口会把真实短链判 404，见设计文档 5.4.4）。
         -->
+        <dependency>
+            <groupId>com.shortlink</groupId>
+            <artifactId>shortlink-component-ratelimit</artifactId>
+        </dependency>
 
         <dependency>
             <groupId>org.springframework.boot</groupId>
@@ -72,7 +80,11 @@
             <artifactId>spring-kafka</artifactId>
         </dependency>
         -->
-    </dependencies>
+            <dependency>
+            <groupId>org.springframework</groupId>
+            <artifactId>spring-test</artifactId>
+            <scope>test</scope>
+        </dependency></dependencies>
 
     <build>
         <plugins>

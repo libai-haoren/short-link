@@ -45,6 +45,21 @@ public class RedisLinkCache implements LinkCache {
     }
 
     /**
+     * 空操作：Redis 就是数据源，admin 已经写过新值了，这里没有任何"本地副本"需要清。
+     *
+     * <p>保留这两个方法是接口契约要求——上层的失效广播不关心下面有没有 L1。</p>
+     */
+    @Override
+    public void invalidate(String shortCode) {
+        // no-op
+    }
+
+    @Override
+    public void invalidateAll() {
+        // no-op
+    }
+
+    /**
      * 把底层技术异常统一成领域异常，避免 Lettuce/Netty 的异常类型泄漏到上层。
      * 解析异常原样透传，它已经有明确语义。
      */
