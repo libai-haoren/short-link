@@ -1,0 +1,98 @@
+{
+  "title": "ShortLink · 概览",
+  "uid": "shortlink-overview",
+  "tags": ["shortlink"],
+  "timezone": "browser",
+  "schemaVersion": 39,
+  "version": 1,
+  "refresh": "10s",
+  "time": { "from": "now-1h", "to": "now" },
+  "templating": {
+    "list": [
+      {
+        "name": "DS_PROMETHEUS",
+        "label": "Prometheus",
+        "type": "datasource",
+        "query": "prometheus",
+        "current": { "text": "Prometheus", "value": "Prometheus" }
+      }
+    ]
+  },
+  "panels": [
+    {
+      "id": 1,
+      "type": "timeseries",
+      "title": "跳转 QPS（按结果）",
+      "gridPos": { "h": 8, "w": 12, "x": 0, "y": 0 },
+      "datasource": { "type": "prometheus", "uid": "${DS_PROMETHEUS}" },
+      "targets": [
+        {
+          "refId": "A",
+          "expr": "sum by (result) (rate(shortlink_redirect_total[1m]))",
+          "legendFormat": "{{result}}"
+        }
+      ],
+      "fieldConfig": {
+        "defaults": { "unit": "reqps", "custom": { "drawStyle": "line", "fillOpacity": 10 } }
+      }
+    },
+    {
+      "id": 2,
+      "type": "timeseries",
+      "title": "跳转延迟 P50 / P95 / P99",
+      "gridPos": { "h": 8, "w": 12, "x": 12, "y": 0 },
+      "datasource": { "type": "prometheus", "uid": "${DS_PROMETHEUS}" },
+      "targets": [
+        { "refId": "A", "expr": "histogram_quantile(0.50, sum(rate(shortlink_redirect_latency_seconds_bucket[1m])) by (le))", "legendFormat": "P50" },
+        { "refId": "B", "expr": "histogram_quantile(0.95, sum(rate(shortlink_redirect_latency_seconds_bucket[1m])) by (le))", "legendFormat": "P95" },
+        { "refId": "C", "expr": "histogram_quantile(0.99, sum(rate(shortlink_redirect_latency_seconds_bucket[1m])) by (le))", "legendFormat": "P99" }
+      ],
+      "fieldConfig": {
+        "defaults": { "unit": "s", "custom": { "drawStyle": "line", "fillOpacity": 0 } }
+      }
+    },
+    {
+      "id": 3,
+      "type": "timeseries",
+      "title": "L1 命中率",
+      "gridPos": { "h": 8, "w": 8, "x": 0, "y": 8 },
+      "datasource": { "type": "prometheus", "uid": "${DS_PROMETHEUS}" },
+      "targets": [
+        {
+          "refId": "A",
+          "expr": "sum(rate(shortlink_cache_l1_total{result=\"hit\"}[1m])) / clamp_min(sum(rate(shortlink_cache_l1_total[1m])), 0.001)",
+          "legendFormat": "hit ratio"
+        }
+      ],
+      "fieldConfig": { "defaults": { "unit": "percentunit", "min": 0, "max": 1 } }
+    },
+    {
+      "id": 4,
+      "type": "timeseries",
+      "title": "缓存失效次数（按来源）",
+      "gridPos": { "h": 8, "w": 8, "x": 8, "y": 8 },
+      "datasource": { "type": "prometheus", "uid": "${DS_PROMETHEUS}" },
+      "targets": [
+        {
+          "refId": "A",
+          "expr": "sum by (source) (rate(shortlink_cache_evict_total[1m]))",
+          "legendFormat": "{{source}}"
+        }
+      ],
+      "fieldConfig": { "defaults": { "unit": "ops" } }
+    },
+    {
+      "id": 5,
+      "type": "timeseries",
+      "title": "被拒绝的请求（限流 / 黑名单）",
+      "gridPos": { "h": 8, "w": 8, "x": 16, "y": 8 },
+      "datasource": { "type": "prometheus", "uid": "${DS_PROMETHEUS}" },
+      "targets": [
+        { "refId": "A", "expr": "sum(rate(shortlink_gateway_ratelimit_rejected_total[1m]))", "legendFormat": "网关限流" },
+        { "refId": "B", "expr": "sum(rate(shortlink_redirect_ratelimit_rejected_total[1m]))", "legendFormat": "redirect 限流" },
+        { "refId": "C", "expr": "sum(rate(shortlink_gateway_blacklist_blocked_total[1m]))", "legendFormat": "黑名单" }
+      ],
+      "fieldConfig": { "defaults": { "unit": "ops" } }
+    }
+  ]
+}

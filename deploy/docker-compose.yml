@@ -53,8 +53,11 @@ services:
     container_name: shortlink-redis
     command:
       - redis-server
+      # redirect 的唯一数据源，重启丢数据 = 全站 404，所以必须开 AOF
       - --appendonly
-      - "no"
+      - "yes"
+      - --appendfsync
+      - everysec
       - --maxmemory
       - 512mb
       # 短链缓存可以丢（能从 MySQL 重建），所以用 LRU 而不是报错
@@ -62,6 +65,8 @@ services:
       - allkeys-lru
     ports:
       - "${REDIS_PORT:-6379}:6379"
+    volumes:
+      - redis-data:/data
     healthcheck:
       test: ["CMD", "redis-cli", "ping"]
       interval: 5s
@@ -89,6 +94,9 @@ services:
       REDIS_PORT: 6379
       SHORT_DOMAIN: ${SHORT_DOMAIN:-s.example.com}
       CODEC_KEY: ${CODEC_KEY:-905197557613}
+      # 必须与 gateway 的 JWT_SECRET 一致，否则网关验签全失败
+      JWT_SECRET: ${JWT_SECRET:-shortlink-dev-secret-please-change-in-production-0123456789}
+      ADMIN_PASSWORD_SHA256: ${ADMIN_PASSWORD_SHA256:-240be518fabd2724ddb6f04eeb1da5967448d7e831c08c8fa822809f74c720a9}
       JAVA_OPTS: ${ADMIN_JAVA_OPTS:--Xms256m -Xmx512m -XX:+UseZGC}
       TZ: Asia/Shanghai
     ports:
@@ -145,8 +153,129 @@ services:
       options: { max-size: "10m", max-file: "3" }
     networks: [shortlink-net]
 
+  # ------------------------------------------------------------------
+  # gateway：管理面唯一入口（鉴权 + 限流）。
+  # redirect 不经过网关——跳转流量直连，否则网关要扛全量 QPS。
+  # ------------------------------------------------------------------
+  gateway:
+    build:
+      context: ..
+      dockerfile: deploy/app/Dockerfile
+      args:
+        MODULE: shortlink-gateway
+    image: shortlink/gateway:local
+    container_name: shortlink-gateway
+    environment:
+      # 接入注册中心后把这里换成 lb://shortlink-admin
+      ADMIN_URI: http://admin:8082
+      STATS_URI: http://stats-api:8085
+      REDIS_HOST: redis
+      REDIS_PORT: 6379
+      JWT_SECRET: ${JWT_SECRET:-shortlink-dev-secret-please-change-in-production-0123456789}
+      RATE_LIMIT_CAPACITY: ${RATE_LIMIT_CAPACITY:-600}
+      JAVA_OPTS: ${GATEWAY_JAVA_OPTS:--Xms256m -Xmx512m}
+      TZ: Asia/Shanghai
+    ports:
+      - "${GATEWAY_PORT:-8080}:8080"
+    depends_on:
+      admin:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+    healthcheck:
+      test: ["CMD-SHELL", "wget -qO- http://127.0.0.1:8080/actuator/health | grep -q '\"status\":\"UP\"'"]
+      interval: 10s
+      timeout: 3s
+      retries: 12
+      start_period: 40s
+    stop_grace_period: 30s
+    logging:
+      driver: json-file
+      options: { max-size: "10m", max-file: "3" }
+    networks: [shortlink-net]
+
+  # ------------------------------------------------------------------
+  # stats-api：统计查询（只读 MySQL 日聚合 + Redis 实时）
+  # ------------------------------------------------------------------
+  stats-api:
+    build:
+      context: ..
+      dockerfile: deploy/app/Dockerfile
+      args:
+        MODULE: shortlink-stats/shortlink-stats-api
+    image: shortlink/stats-api:local
+    container_name: shortlink-stats-api
+    environment:
+      MYSQL_HOST: mysql
+      MYSQL_PORT: 3306
+      MYSQL_USER: root
+      MYSQL_PASSWORD: ${MYSQL_ROOT_PASSWORD:-shortlink}
+      REDIS_HOST: redis
+      REDIS_PORT: 6379
+      JAVA_OPTS: ${STATS_JAVA_OPTS:--Xms256m -Xmx512m}
+      TZ: Asia/Shanghai
+    ports:
+      - "${STATS_API_PORT:-8085}:8085"
+    depends_on:
+      mysql:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+    healthcheck:
+      test: ["CMD-SHELL", "wget -qO- http://127.0.0.1:8085/actuator/health | grep -q '\"status\":\"UP\"'"]
+      interval: 10s
+      timeout: 3s
+      retries: 12
+      start_period: 40s
+    stop_grace_period: 30s
+    logging:
+      driver: json-file
+      options: { max-size: "10m", max-file: "3" }
+    networks: [shortlink-net]
+
+  # ------------------------------------------------------------------
+  # job：定时任务（过期清理、审计归档），单实例执行靠 Redis 锁
+  # ------------------------------------------------------------------
+  job:
+    build:
+      context: ..
+      dockerfile: deploy/app/Dockerfile
+      args:
+        MODULE: shortlink-job
+    image: shortlink/job:local
+    container_name: shortlink-job
+    environment:
+      MYSQL_HOST: mysql
+      MYSQL_PORT: 3306
+      MYSQL_USER: root
+      MYSQL_PASSWORD: ${MYSQL_ROOT_PASSWORD:-shortlink}
+      REDIS_HOST: redis
+      REDIS_PORT: 6379
+      JOB_ENABLED: ${JOB_ENABLED:-true}
+      JAVA_OPTS: ${JOB_JAVA_OPTS:--Xms256m -Xmx512m}
+      TZ: Asia/Shanghai
+    ports:
+      - "${JOB_PORT:-8086}:8086"
+    depends_on:
+      mysql:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+    healthcheck:
+      test: ["CMD-SHELL", "wget -qO- http://127.0.0.1:8086/actuator/health | grep -q '\"status\":\"UP\"'"]
+      interval: 10s
+      timeout: 3s
+      retries: 12
+      start_period: 40s
+    stop_grace_period: 30s
+    logging:
+      driver: json-file
+      options: { max-size: "10m", max-file: "3" }
+    networks: [shortlink-net]
+
 volumes:
   mysql-data:
+  redis-data:
 
 networks:
   shortlink-net:

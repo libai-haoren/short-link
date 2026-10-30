@@ -37,3 +37,7 @@ deploy/.env
 .verify/
 .tmp-mysql/
 .tmp-cp.txt
+
+### 本地构建/验证临时目录 ###
+.tmp-docker/
+.tmp-*/
