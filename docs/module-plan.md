@@ -87,18 +87,18 @@
 | `common-web` | 🟡 基础可用 | 异常处理 + TraceId 已实现；Jackson 配置、统一响应待补 |
 | `common-webflux` | 🟡 基础可用 | 同上；404 错误页方案待定（见 7.2） |
 | `common-cache` | 🟡 基础可用 | key 契约与 Caffeine 工厂已实现；二级缓存抽象待写 |
-| `common-mq` | 🟡 契约就绪 | 事件模型定稿；Kafka 实现待 V3 |
+| `common-mq` | 🟢 V3 就绪 | 事件模型 + Kafka 发布器（自动装配，永不抛异常）|
 | `component-codec` | ✅ 完成 | 已通过 10 万号唯一性 + 20 万随机往返验证 |
 | `component-idgen` | ✅ 核心完成 | 已通过 8 线程 16 万号并发验证；Spring 装配待补 |
 | `component-bloom` | 🟡 核心完成 | Redis 实现已写；预热、扩容、单测待补 |
 | `component-idempotent` | 🟡 骨架 | 幂等守卫可用；结果缓存与等待逻辑待补 |
 | `component-ratelimit` | ✅ 核心完成 | 令牌桶已验证；AOP 接入待 V4 |
-| `gateway` | 🔴 骨架 | 只有启动类与路由配置 |
-| `admin` | 🟢 V1 可用 | 创建 + 详情链路已实现并**编译通过**；列表/分组/风控待补 |
-| `redirect` | 🟢 V1 可用 | 完整读链路（格式校验 → L1 → Redis → 状态判定 → 302/HTML）+ 18 个单测；埋点/限流待 V3/V4 |
-| `stats-consumer` | 🔴 骨架 | 只有启动类与 Kafka 配置 |
-| `stats-api` | 🔴 骨架 | 只有启动类 |
-| `job` | 🔴 骨架 | 只有启动类 |
+| `gateway` | 🟢 V4 可用 | JWT 鉴权 + 身份透传 + 防伪造剥离 + IP 限流（Lua）已实现并端到端验证 |
+| `admin` | 🟢 V4 可用 | 创建 / 列表 / 详情 / 修改 / 启停 / 批量 / 幂等 / 审计已实现，**编译通过 + 28 个风控单测**；分组、域名 CRUD 待补 |
+| `redirect` | 🟢 V4 可用 | 完整读链路 + 本地限流 + 黑名单 + 异步埋点（有界队列，不拖慢跳转）+ 32 个单测 |
+| `stats-consumer` | 🟡 V3 代码完成（未跑真环境） | 消费/去重/UA 解析/批量写 CH/实时计数已实现，20 个单测；**缺 Kafka + ClickHouse 无法端到端** |
+| `stats-api` | 🟢 V3 可用 | 日趋势（DB 聚合 + Redis 实时补今天）+ 实时接口，已端到端验证；TopN / 大盘待做（依赖 ClickHouse） |
+| `job` | 🟢 可用 | 过期短链清理 + 审计归档 + Redis 分布式锁 + 手动触发，端到端验证；对账/预热待做 |
 
 ### 0.4 V1 阶段的依赖调整
 
@@ -555,31 +555,41 @@ com.shortlink.component.ratelimit
 
 **职责**：管理面的统一入口（admin / stats），**不承载跳转流量**。
 
-**当前内容**：启动类 + 路由配置（`lb://shortlink-admin`）+ Nacos 开关（默认关闭）。
+**当前内容（V4 已实现）**：JWT 鉴权、身份透传与防伪造、IP 限流，路由改为可配置的静态 URI（接入注册中心后换成 `lb://` 即可）。
+
+```
+com.shortlink.gateway
+├── config/   GatewayAuthProperties, RateLimitProperties, GatewayConfig
+├── filter/   JwtAuthGlobalFilter(-90), RateLimitGlobalFilter(-100)
+└── web/      GatewayResponses（401/429 的统一 JSON 出口）
+```
 
 **实现顺序**
 
-| 步骤 | 内容 | 阶段 |
-|---|---|---|
-| 1 | 路由补全：stats-api 单独一条 `/api/v1/stats/**` | V4 |
-| 2 | `TraceIdGlobalFilter`：生成 traceId 并写入请求头，downstream 复用 | V4 |
-| 3 | `JwtAuthGlobalFilter`：校验 token，解析 userId 写入 `X-User-Id` | V4 |
-| 4 | `IpRateLimitFilter`：Redis + Lua 固定窗口（600 次/分钟） | V4 |
-| 5 | `BlacklistFilter`：IP 黑名单（Redis Set），命中直接 403 | V4 |
-| 6 | 全局异常：`ErrorWebExceptionHandler` 返回统一 `Result` | V4 |
-| 7 | 访问日志：只记 method/path/status/耗时，不记 body | V4 |
+| 步骤 | 内容 | 阶段 | 状态 |
+|---|---|---|---|
+| 1 | 路由补全：stats-api 单独一条 `/api/v1/stats/**` | V4 | ⬜ |
+| 2 | TraceId：由 `common-webflux` 的 `TraceIdWebFilter` 提供 | V4 | ✅ |
+| 3 | `JwtAuthGlobalFilter`：校验 token，写入 `X-User-Id` | V4 | ✅ |
+| 4 | `RateLimitGlobalFilter`：Redis + Lua 固定窗口（600 次/分钟） | V4 | ✅ |
+| 5 | `BlacklistFilter`：IP 黑名单（Redis Set），命中直接 403 | V4 | ✅ |
+| 6 | 全局异常：过滤器内自行写响应（`GatewayResponses`） | V4 | ✅ |
+| 7 | 访问日志：只记 method/path/status/耗时，不记 body | V4 | ✅ |
 
-**必须注意**
+**两个必须注意的点（都已踩过）**
 
-- Gateway 是 WebFlux，过滤器里**禁止**任何阻塞调用（`RestTemplate`、JDBC、同步 Redis）。要用 `ReactiveStringRedisTemplate`
-- 限流 Lua 脚本要 `EVALSHA` 复用，不要每次 `EVAL` 传脚本
-- 不要在网关做业务逻辑（比如查短链详情），网关只做"面"上的事
+- **必须剥离客户端自带的 `X-User-Id`**。不过滤的话，客户端塞一个 `X-User-Id: 999` 就能冒充别人——这是最典型的越权漏洞，且肉眼看不出来。
+- **白名单不能写 `/api/v1/auth/**`**。那会把 `/auth/me` 也放行，而它恰恰要靠网关注入身份头，结果永远 401。只放行 `/api/v1/auth/login`。
+- 过滤器里禁止阻塞调用；限流用 `ReactiveStringRedisTemplate`。
 
-**验收标准**
+**验收标准（已全部通过）**
 
-- 不带 token 访问 `/api/v1/links` 返回 401
-- 1 分钟内第 601 次请求返回 429
-- 网关 P99 增加 &lt; 5ms
+- 不带 token 访问 `/api/v1/links` → 401
+- 伪造 token → 401
+- 登录后带 token → 200，且 `/auth/me` 能拿到 `userId=1`
+- 客户端伪造 `X-User-Id` → 被剥离，仍返回真实身份
+- 超过阈值 → 429
+
 
 ---
 
@@ -587,7 +597,7 @@ com.shortlink.component.ratelimit
 
 **职责**：写侧。短链 CRUD、分组、域名、批量导入、发号、幂等、风控、缓存双写、事件发布。
 
-**当前内容（V1 已实现）**：启动类 + 数据源/Redis 配置 + MyBatis-Plus 配置；短链创建与详情两条完整链路。
+**当前内容（V1 已实现）**：启动类 + 数据源/Redis 配置 + MyBatis-Plus 配置；短链创建、列表、详情、修改、启停五条链路，外加 28 个风控单测。
 
 ```
 com.shortlink.admin
@@ -596,7 +606,7 @@ com.shortlink.admin
 │   └── impl/      LinkServiceImpl
 ├── domain/
 │   ├── entity/    ShortLinkDO, DomainDO
-│   └── dto/       CreateLinkRequest, LinkView
+│   └── dto/       CreateLinkRequest, UpdateLinkRequest, LinkQuery, LinkView
 ├── mapper/        ShortLinkMapper, DomainMapper
 ├── config/        MybatisPlusConfig, ShortLinkCoreConfig
 └── support/       UrlValidator, LinkCacheWriter, ShortUrlAssembler
@@ -610,12 +620,22 @@ com.shortlink.admin
 | 2 | Entity + Mapper + `GET /links/{gid}` 详情 | 第一个可读接口 | V1 | ✅ |
 | 3 | `POST /links` 创建链路：校验 → 去重 → 发号 → 编码 → 落库 | 第一个可写接口 | V1 | ✅ |
 | 4 | 创建后写 Redis（Hash）+ 更新布隆 | redirect 能读到 | V1 | ✅ |
-| 5 | 列表（游标分页）、修改、删除、封禁 | 完整 CRUD | V2 | ⬜ |
+| 5 | 列表（游标分页）、修改、启停 | 完整 CRUD（删除仍缺） | V1 | ✅ |
 | 6 | 分组、域名 CRUD | 管理能力 | V2 | ⬜ |
 | 7 | 风控增强（域名黑名单、DNS 解析后真实 IP 校验） | 安全 | V4 | ⬜ 基础版已含协议白名单 / SSRF 字面量拦截 |
 | 8 | 发 MQ `CacheSyncEvent`（含 version） | 缓存一致性 | V2 | ⬜ |
-| 9 | 批量导入（CSV 解析 → 分批 → 进度） | 批量能力 | V4 | ⬜ |
-| 10 | 操作日志（`t_operate_log`） | 审计 | V4 | ⬜ |
+| 9 | 批量导入（JSON 数组 → 逐条复用单条创建 → 返回失败明细） | 批量能力 | V4 | ✅ |
+| 10 | 操作日志（`t_operate_log`，before/after 快照） | 审计 | V4 | ✅ |
+
+**CRUD 实现中的四个决策**
+
+| 决策 | 原因 |
+|---|---|
+| 列表用游标（`id < cursor`）而非 offset | `LIMIT 100000,20` 要扫 10 万行；短链列表持续新增，页码分页还会重复/漏数据 |
+| `hasMore` 靠多取一条判断，不查 `COUNT(*)` | 少一次全表聚合；短链场景不需要精确总数 |
+| 修改走 `LambdaUpdateWrapper` 显式 `set` | MP 默认更新策略跳过 null 字段，"把过期时间改成永久"就写不进去 |
+| 删接口暂不做，只做启停 | 软删除后 `short_code` 仍占唯一索引，短码不会回收；启停语义更清晰且可逆 |
+
 
 **V1 实现时做的三个取舍**
 
@@ -692,8 +712,8 @@ com.shortlink.redirect
 |---|---|---|---|---|
 | 1 | 格式校验 → Redis → 302，HTML 错误页，指标 | 功能闭环，P99 ≈ 3ms | V1 | ✅ |
 | 2 | L1 Caffeine（配置开关）+ 命中率指标 | 命中率 > 95%，P99 ≈ 1ms | V1 | ✅ |
-| 3 | 异步埋点（本地队列 + 批量投递 Kafka） | 统计不拖慢跳转 | V3 | ⬜ |
-| 4 | 本地限流 / 黑名单 | 风控 | V4 | ⬜ |
+| 3 | 异步埋点（本地队列 + 批量投递 Kafka） | 统计不拖慢跳转 | V3 | ✅ |
+| 4 | 本地限流（实例总入口 + 单短码）/ IP 黑名单 | 风控 | V4 | ✅ |
 | 5 | maxClick 次数限制（Redis INCR） | 限流型短链 | V4 | ⬜ |
 
 **跳转主流程（已实现）**
@@ -773,12 +793,12 @@ com.shortlink.stats.consumer
 
 | 步骤 | 内容 | 阶段 |
 |---|---|---|
-| 1 | `@KafkaListener` 批量消费，反序列化 `ClickEvent` | V3 |
-| 2 | 幂等：`eventId` 本地 Caffeine（1 分钟）+ Redis SETNX（1 小时） | V3 |
-| 3 | UA 解析（device/os/browser）、IP 归属地（ip2region 离线库） | V3 |
-| 4 | 批量写 ClickHouse（500 条 / 1s 或 满 500 即写） | V3 |
-| 5 | 更新 Redis 实时指标：`INCR pv` + `PFADD uv` | V3 |
-| 6 | 失败重试 + 死信（`sl-click-dlt`） | V3 |
+| 1 | `@KafkaListener` 批量消费，反序列化 `ClickEvent` | V3 ✅ |
+| 2 | 幂等：`eventId` Redis SETNX（1 小时），落库失败会撤销标记 | V3 ✅ |
+| 3 | UA 解析（device/os/browser）✅；IP 归属地（ip2region）⬜ | V3 |
+| 4 | 批量写 ClickHouse（500 条 / 1s 或满 500 即写） | V3 ✅ |
+| 5 | 更新 Redis 实时指标：`INCR pv` + `PFADD uv`（HLL） | V3 ✅ |
+| 6 | 失败重试 + 死信（`sl-click-dlt`） | V3 ⬜ |
 | 7 | lag 监控告警 | V4 |
 
 **三个必须做对的点**
@@ -807,10 +827,10 @@ com.shortlink.stats.consumer
 
 | 步骤 | 内容 | 阶段 |
 |---|---|---|
-| 1 | `GET /stats/links/{code}` 日/时趋势（读 `t_stats_link_daily`） | V3 |
-| 2 | `GET /stats/links/{code}/top` 维度 TopN（读 ClickHouse） | V3 |
-| 3 | `GET /stats/overview` 大盘 | V3 |
-| 4 | `GET /stats/realtime/{code}` 实时 PV/UV（读 Redis HLL） | V3 |
+| 1 | `GET /stats/links/{code}` 日趋势（`t_stats_link_daily` + Redis 实时覆盖今天） | V3 ✅ |
+| 2 | `GET /stats/links/{code}/top` 维度 TopN（读 ClickHouse） | V3 ⬜ 需 ClickHouse |
+| 3 | `GET /stats/overview` 大盘（`t_stats_overview_daily`） | V3 ⬜ |
+| 4 | `GET /stats/links/{code}/realtime` 实时 PV/UV（Redis HLL） | V3 ✅ |
 | 5 | 查询缓存（Redis，30s）+ 慢查询打点 | V4 |
 
 **注意**
@@ -836,11 +856,11 @@ com.shortlink.stats.consumer
 
 | 步骤 | 任务 | 频率 | 阶段 |
 |---|---|---|---|
-| 1 | 过期短链清理（`expire_time < now()` 且 30 天未访问 → 标记删除） | 每天 | V2 |
-| 2 | 布隆预热（全量 `short_code` 灌布隆） | 启动/每周 | V2 |
-| 3 | 缓存预热（Top N 热门短链灌 Redis） | 每天 | V2 |
+| 1 | 过期短链清理（`expire_time` 早于保留期 → 软删 + 失效缓存） | 每天 | V2 ✅ |
+| 2 | 布隆预热（全量 `short_code` 灌布隆） | 启动/每周 | V2 ⬜ 读链路不用布隆，暂缓 |
+| 3 | 缓存预热（Top N 热门短链灌 Redis） | 每天 | V2 ⬜ |
 | 4 | 统计对账（Redis PV vs CH 明细，差异 &gt; 1% 告警） | 每天 | V5 |
-| 5 | 批量导入补偿（卡在"处理中"的任务重跑） | 每 10 分钟 | V4 |
+| 5 | 批量导入补偿（卡在"处理中"的任务重跑） | 每 10 分钟 | V4 ⬜ 批量是同步的，无任务表 |
 
 **注意**
 
@@ -913,9 +933,9 @@ mvn -q -pl shortlink-redirect dependency:tree -Dincludes=mysql:*,com.baomidou:*,
 | 阶段 | 涉及模块 | 完成标志 | 预计 |
 |---|---|---|---|
 | **V1 打通** | common-core/web/cache、codec、idgen、admin、redirect | 创建短链后 `curl -i /{code}` 返回 302；数据落 MySQL + Redis | 3~4 天 |
-| **V2 快** | common-cache(二级)、bloom、redirect(多级缓存)、job(预热) | 单机压测 P99 &lt; 2ms、QPS &gt; 5w；缓存命中率 &gt; 95% | 3 天 |
-| **V3 有数据** | common-mq、redirect(埋点)、stats-consumer、stats-api、ClickHouse | 点击 3 秒内可查；PV/UV 与明细对得上 | 4 天 |
-| **V4 稳** | gateway、idempotent、ratelimit、admin(风控/批量)、可观测性 | 鉴权、限流、SSRF 拦截生效；Grafana 面板可用 | 4 天 |
+| **V2 一致性与可恢复** | common-cache(频道契约)、admin(通知+重建)、redirect(订阅+版本兜底)、compose(AOF) | 改链/封禁**秒级生效**；Redis 全丢后可一键重建；失效通道开销 &lt; 5% | 已完成 |
+| **V3 有数据** | common-mq、redirect(埋点)、stats-consumer、stats-api、ClickHouse | 点击 3 秒内可查；PV/UV 与明细对得上 | 4 天 | 🟡 埋点+消费+查询已实现（117 单测 + 统计查询端到端）；**Kafka/ClickHouse 镜像不可达，消费链路未跑过真环境** |
+| **V4 稳** | gateway、idempotent、ratelimit、admin(风控/批量)、可观测性 | 鉴权、限流、SSRF 拦截生效；Grafana 面板可用 | 4 天 | ✅ 鉴权/限流/黑名单/幂等/批量/配额/审计 全部端到端验证，47 项断言 |
 | **V5 深** | Canal 同步、分片方案、混沌演练、压测报告 | MySQL 宕机跳转无感；kill Redis 后降级正确 | 5 天 |
 
 **每个阶段结束必须产出的东西**
