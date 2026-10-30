@@ -8,7 +8,7 @@ spring:
     bootstrap-servers: ${KAFKA_SERVERS:127.0.0.1:9092}
     consumer:
       group-id: shortlink-stats
-      # 批量消费：一次 poll 拉多条，配合手动 ack 才能做到“处理完再提交 offset”
+      # 批量消费：一次 poll 拉多条，配合手动 ack 才能做到"处理完再提交 offset"
       max-poll-records: 500
       enable-auto-commit: false
       auto-offset-reset: earliest
@@ -19,11 +19,40 @@ spring:
       ack-mode: manual_immediate
       concurrency: 4
 
+  data:
+    redis:
+      host: ${REDIS_HOST:127.0.0.1}
+      port: ${REDIS_PORT:6379}
+      timeout: 200ms
+
+  # ClickHouse 走标准 JDBC；业务代码只依赖 DataSource，驱动只在运行时需要
+  datasource:
+    url: jdbc:clickhouse://${CLICKHOUSE_HOST:127.0.0.1}:${CLICKHOUSE_HTTP_PORT:8123}/shortlink
+    driver-class-name: com.clickhouse.jdbc.ClickHouseDriver
+    username: ${CLICKHOUSE_USER:default}
+    password: ${CLICKHOUSE_PASSWORD:shortlink}
+    hikari:
+      maximum-pool-size: 4
+      # ClickHouse 没起来时不要卡住应用启动：统计服务降级好过启不来
+      initialization-fail-timeout: -1
+
+shortlink:
+  stats:
+    group-id: shortlink-stats
+    # 缓冲区满时消费端会抛异常从而不提交位点：允许变慢，不允许静默丢数据
+    buffer-size: 10000
+    # ClickHouse 最怕一条一条 insert（每次生成一个 part），批量是硬要求不是优化
+    batch-size: 500
+    flush-interval: 1s
+
 management:
   endpoints:
     web:
       exposure:
         include: health,info,metrics,prometheus
+  endpoint:
+    health:
+      show-details: always
   metrics:
     tags:
       application: ${spring.application.name}

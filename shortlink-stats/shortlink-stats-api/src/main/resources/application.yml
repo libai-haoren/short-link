@@ -1,31 +1,50 @@
 server:
-  port: 8083
+  port: 8085
 
 spring:
   application:
     name: shortlink-stats-api
+
   datasource:
-    # 统计库与业务库物理隔离，避免报表查询影响写侧
+    # 统计库与业务库物理隔离（sql/01-schema.sql 里建了 shortlink_stats），
+    # 报表查询再慢也压不到写侧。
     url: jdbc:mysql://${MYSQL_HOST:127.0.0.1}:${MYSQL_PORT:3306}/shortlink_stats?useUnicode=true&characterEncoding=utf8&serverTimezone=Asia/Shanghai&useSSL=false&allowPublicKeyRetrieval=true
     username: ${MYSQL_USER:root}
     password: ${MYSQL_PASSWORD:root}
     hikari:
       maximum-pool-size: 10
+      # 统计库挂了也要能启动：报表不可用，但别把服务拖死
+      initialization-fail-timeout: -1
+
   data:
     redis:
       host: ${REDIS_HOST:127.0.0.1}
       port: ${REDIS_PORT:6379}
       timeout: 200ms
+      connect-timeout: 1s
+
+  jackson:
+    serialization:
+      # LocalDate 必须输出 "2026-10-27"，默认会序列化成 [2026,10,27]，前端解析很痛苦
+      write-dates-as-timestamps: false
 
 mybatis-plus:
   configuration:
     map-underscore-to-camel-case: true
+  global-config:
+    banner: false
 
 management:
   endpoints:
     web:
       exposure:
         include: health,info,metrics,prometheus
+  endpoint:
+    health:
+      show-details: always
+  metrics:
+    tags:
+      application: ${spring.application.name}
 
 logging:
   pattern:

@@ -1,5 +1,6 @@
 package com.shortlink.stats.api;
 
+import org.mybatis.spring.annotation.MapperScan;
 import org.springframework.boot.SpringApplication;
 import org.springframework.boot.autoconfigure.SpringBootApplication;
 
@@ -15,6 +16,7 @@ import org.springframework.boot.autoconfigure.SpringBootApplication;
  * <p>拆开后各自的扩缩容策略也完全不同（消费按 lag 扩容，查询按 QPS 扩容）。</p>
  */
 @SpringBootApplication
+@MapperScan("com.shortlink.stats.api.mapper")
 public class StatsApiApplication {
 
     public static void main(String[] args) {
