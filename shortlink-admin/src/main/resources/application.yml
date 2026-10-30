@@ -39,6 +39,20 @@ shortlink:
   bloom:
     # 布隆容量：影响误判率，扩容需重建（见设计文档 5.3）
     expected-elements: ${BLOOM_CAPACITY:10000000}
+  admin:
+    cache:
+      # 写 Redis 失败的重试次数；最终失败会打点告警，靠重建接口恢复
+      write-retry: 3
+    auth:
+      # V4 占位账号：生产必须换成用户表 + BCrypt。这里存的是口令的 SHA-256，不是明文
+      username: ${ADMIN_USERNAME:admin}
+      password-sha256: ${ADMIN_PASSWORD_SHA256:240be518fabd2724ddb6f04eeb1da5967448d7e831c08c8fa822809f74c720a9}
+      user-id: 1
+  jwt:
+    # 与 gateway 共用；少于 32 字节会直接启动失败（HS256 的硬要求）
+    secret: ${JWT_SECRET:shortlink-dev-secret-please-change-in-production-0123456789}
+    issuer: shortlink
+    ttl: 2h
 
 mybatis-plus:
   configuration:

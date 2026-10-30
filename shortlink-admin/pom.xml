@@ -30,6 +30,10 @@
         </dependency>
         <dependency>
             <groupId>com.shortlink</groupId>
+            <artifactId>shortlink-common-jwt</artifactId>
+        </dependency>
+        <dependency>
+            <groupId>com.shortlink</groupId>
             <artifactId>shortlink-component-idgen</artifactId>
         </dependency>
         <dependency>
@@ -59,8 +63,19 @@
             <artifactId>lombok</artifactId>
         </dependency>
         <dependency>
+            <groupId>org.junit.jupiter</groupId>
+            <artifactId>junit-jupiter</artifactId>
+            <scope>test</scope>
+        </dependency>
+        <dependency>
             <groupId>org.springframework.boot</groupId>
             <artifactId>spring-boot-starter-actuator</artifactId>
+        </dependency>
+        <!-- V4 可观测性：暴露 /actuator/prometheus，供 Grafana 面板消费 -->
+        <dependency>
+            <groupId>io.micrometer</groupId>
+            <artifactId>micrometer-registry-prometheus</artifactId>
+            <scope>runtime</scope>
         </dependency>
         <!--
           Nacos 注册中心在 V4 接入（届时 admin/stats/job 统一开启）。
@@ -72,6 +87,11 @@
         <dependency>
             <groupId>org.springdoc</groupId>
             <artifactId>springdoc-openapi-starter-webmvc-ui</artifactId>
+        </dependency>
+        <dependency>
+            <groupId>org.springframework</groupId>
+            <artifactId>spring-test</artifactId>
+            <scope>test</scope>
         </dependency>
     </dependencies>
 

@@ -1,12 +1,14 @@
 package com.shortlink.admin.config;
 
 import com.shortlink.common.cache.CacheKeys;
+import com.shortlink.component.idempotent.IdempotentGuard;
 import com.shortlink.component.bloom.BloomFilter;
 import com.shortlink.component.bloom.RedisBloomFilter;
 import com.shortlink.component.codec.ShortCodeCodec;
 import com.shortlink.component.idgen.DbSegmentAllocator;
 import com.shortlink.component.idgen.SegmentIdGenerator;
 import org.springframework.beans.factory.annotation.Value;
+import org.springframework.boot.context.properties.EnableConfigurationProperties;
 import org.springframework.context.annotation.Bean;
 import org.springframework.context.annotation.Configuration;
 import org.springframework.data.redis.core.StringRedisTemplate;
@@ -23,6 +25,7 @@ import org.springframework.jdbc.core.JdbcTemplate;
  * </ul>
  */
 @Configuration
+@EnableConfigurationProperties(AuthProperties.class)
 public class ShortLinkCoreConfig {
 
     @Bean
@@ -43,5 +46,13 @@ public class ShortLinkCoreConfig {
             StringRedisTemplate redisTemplate,
             @Value("${shortlink.bloom.expected-elements:10000000}") long expectedElements) {
         return new RedisBloomFilter(redisTemplate, CacheKeys.BLOOM_CODE, expectedElements);
+    }
+
+    /**
+     * 幂等执行器：写接口带 {@code Idempotency-Key} 时，重复提交返回首次结果。
+     */
+    @Bean
+    public IdempotentGuard idempotentGuard(StringRedisTemplate redisTemplate) {
+        return new IdempotentGuard(redisTemplate);
     }
 }
