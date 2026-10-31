@@ -59,6 +59,11 @@ public class CacheRebuildService {
         int size = Math.min(MAX_BATCH, Math.max(MIN_BATCH, batchSize));
         long start = System.currentTimeMillis();
 
+        // 整批复用一个版本号：不能在重建中途逐条 +1（几万次 INCR 既慢，又会把失效通道的
+        // 版本对账打乱）。取"当前版本"，重建期间的真实写入会拿到更大的版本并胜出——
+        // 这正是我们想要的：重建不能覆盖更新的用户修改。
+        long batchVersion = cacheWriter.currentVersion();
+
         long cursor = 0L;
         long scanned = 0L;
         long written = 0L;
@@ -72,7 +77,8 @@ public class CacheRebuildService {
             List<String> codes = new ArrayList<>(rows.size());
             for (ShortLinkDO row : rows) {
                 scanned++;
-                if (cacheWriter.writeOnly(row)) {
+                // 返回 true 也可能是"已有更新的版本，跳过写入"——两者都算缓存已是最新，不必区分
+                if (cacheWriter.writeOnly(row, batchVersion)) {
                     written++;
                 } else {
                     failed++;

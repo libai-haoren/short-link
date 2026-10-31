@@ -13,7 +13,7 @@ class LinkResolverTest {
     private static final long NOW = 1_761_350_400_000L;
 
     private static LinkSnapshot snapshot(String longUrl, int status, long expireTimeMillis) {
-        return new LinkSnapshot(longUrl, status, expireTimeMillis, 0L, 1L);
+        return new LinkSnapshot(longUrl, status, expireTimeMillis, 0L, 1L, 0L);
     }
 
     @Test

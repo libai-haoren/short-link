@@ -461,11 +461,13 @@ value 按类型分工：**短链元数据用 Hash**（可单字段更新、只�
 | `expireTime` | epoch 毫秒；`"0"` = 永久 | 用毫秒而非日期字符串：避开时区问题与解析开销 |
 | `maxClick` | 整数；`0` = 不限 | 只有 `> 0` 时读侧才多付一次 `INCR` |
 | `domainId` | 整数 | redirect 不使用，保留用于排障 |
+| `version` | 整数，从 1 开始 | **写入版本号**，只有更大的版本才能覆盖（Lua CAS）。缺失按 0 处理——加该字段之前的历史数据没有它 |
 | `shortCode` | 短码 | admin 写入，**读侧刻意不读**——它已经知道短码，多取一个字段只是浪费带宽 |
 
 > **三处必须同时改**：admin 的 `LinkCacheWriter`（写）、`RedisLinkCache.FIELDS`（读的字段与顺序）、`LinkSnapshot.parse`（解析顺序）。
 > 漏改任何一处，表现都是"部分短链 404"或"503 数据损坏"，且只影响改动之后新写入的那批，极难排查。
-> 读侧对五个字段**全部严格校验、不给默认值**：缺字段说明契约已经不一致，必须暴露而不是猜。
+> 读侧对前五个字段**全部严格校验、不给默认值**：缺字段说明契约已经不一致，必须暴露而不是猜。
+> `version` 是唯一例外：缺省按 0 处理，否则上线那一刻所有老缓存都会变成"数据损坏 503"。
 
 ### 4.6 Kafka Topic 设计
 
@@ -694,15 +696,20 @@ admin 写请求
    │
    ├─ 1. 校验 + 幂等检查
    ├─ 2. 写 MySQL（事务提交）
-   ├─ 3. 更新 Redis Hash（写新值，而非 DEL；失败重试 3 次）
-   ├─ 4. INCR sl:cache:ver          ← 全局版本号，兜底用
-   └─ 5. PUBLISH sl:cache-sync {shortCode}
+   ├─ 3. INCR sl:cache:ver                    ← 拿到本次写入的版本号
+   ├─ 4. Lua CAS 写 Redis Hash（只有版本更大才覆盖；失败重试 3 次）
+   ├─ 5. PUBLISH sl:cache-sync {shortCode}
+   └─ 6. （job 侧同理：DEL + INCR + PUBLISH，按批 pipeline）
                 │
                 ▼
       redirect 各实例收到（Redis Pub/Sub 天然广播）
                 │
-                └─ 6. 失效本地 Caffeine 中该短码
+                └─ 7. 失效本地 Caffeine 中该短码
 ```
+
+**为什么版本号要参与缓存写入**：DB 层两个并发写是"后提交的赢"，但两个 `HSET` 到达 Redis
+的顺序可能与提交顺序相反——不做比较的话 Redis 会**永久**停在旧值（直到下一次写或 TTL）。
+版本号来自同一个单调计数器，Lua 里"比较 + 写入 + 续期"原子完成，只有更大的版本能覆盖。
 
 > **实现修正**：原设计用 Kafka `sl-cache-sync` 做广播，落地时改成了 **Redis Pub/Sub**。
 > 理由：缓存失效是"通知"而不是"数据流"，不需要回放/累积/分区有序；
@@ -733,7 +740,7 @@ admin 写请求
 每次写操作都让版本号 +1，并与一条失效消息**1:1 配对**：
 
 ```
-写：   INCR sl:cache:ver   →   PUBLISH sl:cache-sync {code}
+写：   INCR sl:cache:ver  →  Lua CAS 写 Hash  →  PUBLISH sl:cache-sync {code}
 轮询：每 1s（启动时加随机延迟，避免多实例同相位）
         expected = 版本增量 + 上一轮未补齐的缺口
         actual   = 这一轮实际收到的失效消息数

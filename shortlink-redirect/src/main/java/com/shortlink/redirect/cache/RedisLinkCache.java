@@ -23,7 +23,7 @@ public class RedisLinkCache implements LinkCache {
      * {@code LinkCacheWriter} 写入的字段名保持一致。
      */
     private static final List<String> FIELDS =
-            List.of("longUrl", "status", "expireTime", "maxClick", "domainId");
+            List.of("longUrl", "status", "expireTime", "maxClick", "domainId", "version");
 
     private final ReactiveHashOperations<String, String, String> hashOperations;
 

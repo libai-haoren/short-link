@@ -39,7 +39,7 @@ LinkService.create()
   ├─[3] 业务去重    (groupId, md5(longUrl)) 命中 → 刷缓存 + 直接返回已有记录
   ├─[4] 生成候选    发号 → Feistel 编码 7 位短码；gid = ULID
   ├─[5] 落库        insert（唯一事务边界，@Transactional）
-  └─[6] 副作用      布隆 → 写 Redis → INCR 版本号 → PUBLISH 失效 → 审计
+  ├─[6] 副作用      布隆 → INCR 版本号 → Lua CAS 写 Redis → PUBLISH 失效 → 审计
   ▼
 LinkView { gid, shortCode, shortUrl, ... }
   ▼
@@ -128,17 +128,17 @@ public PersistResult insertOrGetExisting(ShortLinkDO candidate) {
 ```
 ① bloomFilter.add(shortCode)        仅 created = true 时
 ② cacheWriter.put(entity)
-     └ writeOnly(): HSET sl:link:{code} + EXPIRE(24h + 0~10% 抖动)，失败重试 3 次
-          ├─ 成功 → markCacheChanged()  INCR sl:cache:ver
-          │       → publishEvict(code)  PUBLISH sl:cache-sync
-          └─ 失败 → 计数器 shortlink.cache.write.failure + ERROR 日志，**不发通知**
+     ├─ bumpVersion():   INCR sl:cache:ver   → 本次写入的版本号 V
+     ├─ Lua CAS 写:      HGET version >= V ? 拒绝 : HSET(含 version) + EXPIRE(24h + 0~10% 抖动)
+     │                   失败重试 3 次；被拒绝说明有更新的写入先落地，**不是错误**
+     └─ publishEvict():  PUBLISH sl:cache-sync {code}
 ③ operateLogService.record(...)     整体 catch，失败只打 ERROR
 ```
 
 三条规则：
 
 1. **缓存和 MQ 绝不进事务**。事务回滚不会撤销已经写进 Redis 的值、也不会撤回已经发出去的消息——把副作用放进事务，等于制造"库里没有、缓存里有"的幽灵短链。
-2. **通知只在 Redis 写入成功后发**。写失败还发通知，只会让所有 redirect 实例一起去读同一份旧值，白白制造一次缓存穿透。
+2. **版本号 +1 就一定要发消息**。失效通道靠"版本增量 vs 实收消息数"对账，只 INCR 不发（或只发不 INCR）都会让对账把正常写入当成丢消息，触发一次全量清空 L1。哪怕这次写入被 CAS 拒绝，通知也照发——用一次多余的失效，换掉一次全量清空。
 3. **"顺手做的事"失败不能拖垮主流程**。审计失败、幂等结果落库失败都只打日志；但缓存写失败要打点告警——它是唯一会让用户拿到"打不开的短链"的失败。
 
 ---

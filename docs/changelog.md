@@ -11,7 +11,7 @@
 
 ## 一句话总结
 
-这轮没有加功能，做的是四件事：**把"缓存挂了会怎样"从口头降级变成有代码的闸门**（A）、**修正两个会自我掩盖的指标与机制**（B 让兜底指标失真、C 让兜底每次写都触发）、**把 job 的清理从逐条往返改成按批 pipeline**（D）、**把文档里对不上实现的表述全部对齐**（E）。
+这轮没有加功能，做的是五件事：**把"缓存挂了会怎样"从口头降级变成有代码的闸门**（A）、**修正两个会自我掩盖的指标与机制**（B 让兜底指标失真、C 让兜底每次写都触发）、**把 job 的清理从逐条往返改成按批 pipeline**（D）、**给缓存写入加版本号 CAS，关掉并发覆盖与回填竞态**（E）、**把文档里对不上实现的表述全部对齐**（F）。
 
 ---
 
@@ -95,11 +95,31 @@
 
 ---
 
-## E. 文档
+## E. 缓存写入带版本号（Lua CAS）
+
+**问题**：DB 层两个并发写是"后提交的赢"，但两个 `HSET` 到达 Redis 的顺序可能与提交顺序相反——晚到的旧值会覆盖新值，**Redis 永久停在旧值**直到下一次写或 TTL。read-through 回填也有同源竞态：读取期间发生失效，旧值被写回空掉的 L1，且不会再有消息来清它。
+
+**改动**
+
+| 文件 | 内容 |
+|---|---|
+| `admin/support/LinkCacheWriter` | 写入改为 Lua 脚本：`HGET version >= 传入版本 → 拒绝`，否则 `HSET(含 version) + EXPIRE`，比较与写入原子完成；版本号取自 `INCR sl:cache:ver`（每次写 +1 的单调计数器）。写入顺序因此变为 **INCR → CAS 写 → PUBLISH** |
+| `admin/service/CacheRebuildService` | 重建整批复用一个版本号（`currentVersion()`），中途不逐条 +1；重建期间的真实写入版本更高，会自然胜出——重建不覆盖更新的用户修改 |
+| `cache/LinkSnapshot` | 新增 `version` 字段；**缺失按 0 处理**，否则上线那一刻所有老缓存都会变成"数据损坏 503" |
+| `cache/RedisLinkCache` | `FIELDS` 增加 `version` |
+| `cache/TwoLevelLinkCache` | 回填前检查两道：① 读取开始后是否发生过失效（按 key 记录水位 + 全局全清水位），发生过就放弃回填；② 本地已有更高版本则不覆盖（`asMap().merge`） |
+
+**为什么版本号仍与消息 1:1**：版本号既是缓存条目的排序依据，也是失效通道的对账依据。写入被 CAS 拒绝时**仍然发消息**——否则版本 +1 而消息为 0，对账会把它当成丢消息并全量清空 L1。用一次多余的失效，换掉一次全量清空。
+
+**测试**：`LinkSnapshotTest` 8（+3：六字段、缺 version 按 0、非法 version 按 0）、`TwoLevelLinkCacheTest` 6（+2：并发回填保留高版本、读取期间失效不回填）。
+
+---
+
+## F. 文档
 
 | 文件 | 改动 |
 |---|---|
-| `docs/shortlink-design.md` | 4.5 Key 表（补 `click:max`、`cache:ready`，划掉已移除的空值缓存，TTL 改为实现值）；新增 4.5.1 Hash 字段契约；5.3.2 三件套与布隆表述按读链路实况重写；5.3.3 一致性（版本号对账重写、补"写入口不止 admin"）；5.4.1 流程图加就绪分支；5.4.5 新增 Redis 四种宕机形态 + 就绪标志；7.1 指标清单按服务重写并补三条告警；§10 已知问题（去掉已修的 404/503，保留熔断）；面试映射表修正（"MQ 广播"→"Pub/Sub 精确失效"） |
+| `docs/shortlink-design.md` | 4.5 Key 表（补 `click:max`、`cache:ready`，划掉已移除的空值缓存，TTL 改为实现值）；新增 4.5.1 Hash 字段契约（含 `version`）；5.3.2 三件套与布隆表述按读链路实况重写；5.3.3 写路径流程改为 INCR → CAS → PUBLISH 并说明理由；版本号对账重写；4.5.1/5.3.3 补"写入口不止 admin"；5.4.1 流程图加就绪分支；5.4.5 新增 Redis 四种宕机形态 + 就绪标志；7.1 指标清单按服务重写并补三条告警；§10 已知问题（去掉已修的 404/503，保留熔断）；面试映射表修正（"MQ 广播"→"Pub/Sub 精确失效"） |
 | `docs/write-path.md`（新） | 写链路端到端时序、逐段拆解、失败模式矩阵、三条不变式、面试追问映射 |
 | `docs/module-plan.md` | redirect"三处修正"；admin 补步骤 11（就绪标志）；job 当前内容与 pipeline 注意事项；风险表 5/7 更新 |
 
@@ -112,7 +132,7 @@ mvn -o -B test
 Reactor 20 个模块  BUILD SUCCESS
 ```
 
-新增/变更用例：`VersionGapTrackerTest` 7、`RedirectMetricsTest` 2、`RedisCacheReadinessTest` 2、`LinkResolverTest` +2、`LinkCleanupServiceTest` +1。
+新增/变更用例：`VersionGapTrackerTest` 7、`RedirectMetricsTest` 2、`RedisCacheReadinessTest` 2、`LinkResolverTest` +2、`LinkSnapshotTest` +3、`TwoLevelLinkCacheTest` +2、`LinkCleanupServiceTest` +1。
 
 ---
 
@@ -120,12 +140,11 @@ Reactor 20 个模块  BUILD SUCCESS
 
 | # | 问题 | 影响 | 建议 |
 |---|---|---|---|
-| 1 | **Redis Hash 没有 per-record version** | 两个并发写同一条短链时，HSET 的落地顺序可能与提交顺序相反，Redis 永久停在旧值；read-through 回填也可能把旧值写回 L1 | Hash 加 `version` 字段 + Lua 比较写入（唯一残留的正确性空洞） |
-| 2 | redirect 没有熔断器 | Redis 持续不可用时每个 miss 仍付 50ms 超时 | 加熔断需处理"已恢复但仍在窗口"的问题，收益不大 |
-| 3 | Caffeine 单条 800B 是估算，未实测 | `maxSize` 可能过于保守（实际或 300~400B，可上调到 20 万） | 用 JOL 或 heap dump 校准，别在面试里当实测报 |
-| 4 | `dependency:tree` 断言只在 pom 注释和文档里 | "redirect 无 JDBC"目前靠自觉 | 在 CI/脚本里落地这条断言 |
-| 5 | `LocalCaches.hitRate()`、`TwoLevelLinkCache.estimatedSize()` 无调用方 | 死代码或待接 gauge | 接成 gauge 或删除 |
-| 6 | read-through 回填与 invalidate 的竞态 | 极低概率下旧值被写回 L1，脏到 TTL | 与 #1 同源，需 per-record version 才能根治 |
+| 1 | redirect 没有熔断器 | Redis 持续不可用时每个 miss 仍付 50ms 超时 | 加熔断需处理"已恢复但仍在窗口"的问题，收益不大 |
+| 2 | Caffeine 单条 800B 是估算，未实测 | `maxSize` 可能过于保守（实际或 300~400B，可上调到 20 万） | 用 JOL 或 heap dump 校准，别在面试里当实测报 |
+| 3 | `dependency:tree` 断言只在 pom 注释和文档里 | "redirect 无 JDBC"目前靠自觉 | 在 CI/脚本里落地这条断言 |
+| 4 | `LocalCaches.hitRate()`、`TwoLevelLinkCache.estimatedSize()` 无调用方 | 死代码或待接 gauge | 接成 gauge 或删除 |
+| 5 | 失效水位依赖单机 `nanoTime` 与 30s 记忆窗口 | 时钟回拨/进程重启后水位失效，只影响极低概率的回填竞态 | 可接受；要更强改为"消息带版本号" |
 
 ---
 
