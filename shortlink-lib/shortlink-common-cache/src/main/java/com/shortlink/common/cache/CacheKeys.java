@@ -33,6 +33,17 @@ public final class CacheKeys {
     /** 全局缓存版本号：MQ 丢消息时的兜底。 */
     public static final String CACHE_VERSION = PREFIX + "cache:ver";
 
+    /**
+     * 缓存就绪标志。
+     *
+     * <p>只有该 key 存在，read 侧才允许把"缓存未命中"解释成"短链不存在"（404）；
+     * 缺失时一律降级为 503 并打点。它跟着 Redis 一起存活：重启不丢、FLUSH 就丢，
+     * 正好对应"数据还在"和"数据没了"两种语义。</p>
+     *
+     * <p>由 admin 在全量重建完成后写入，空库首次启动时由启动引导写入。</p>
+     */
+    public static final String CACHE_READY = PREFIX + "cache:ready";
+
     private CacheKeys() {
     }
 

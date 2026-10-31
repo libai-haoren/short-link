@@ -2,6 +2,7 @@ package com.shortlink.redirect.service;
 
 import com.shortlink.common.cache.CacheKeys;
 import com.shortlink.component.codec.ShortCodeCodec;
+import com.shortlink.redirect.cache.CacheReadiness;
 import com.shortlink.redirect.cache.CacheUnavailableException;
 import com.shortlink.redirect.cache.CorruptCacheDataException;
 import com.shortlink.redirect.cache.LinkCache;
@@ -22,6 +23,10 @@ import java.time.Duration;
  *
  * <p>依赖故障（error 信号）在这一层被消费掉，转成 {@code UNAVAILABLE}，
  * 保证控制器只需要处理一种返回值。</p>
+ *
+ * <p><b>未命中不等于 404</b>：先看 {@link CacheReadiness}。Redis 被清空或主从空切时
+ * 所有 key 都不在，直接判 404 等于给用户"这个链接不存在"的确定性结论；
+ * 就绪标志缺失时降级成 503 并打点，把静默的数据事故变成可告警的可用性事故。</p>
  */
 public class LinkResolver {
 
@@ -33,13 +38,16 @@ public class LinkResolver {
     private final LinkCache linkCache;
     private final RedirectMetrics metrics;
     private final ReactiveStringRedisTemplate redisTemplate;
+    private final CacheReadiness readiness;
 
     public LinkResolver(LinkCache linkCache,
                         RedirectMetrics metrics,
-                        ReactiveStringRedisTemplate redisTemplate) {
+                        ReactiveStringRedisTemplate redisTemplate,
+                        CacheReadiness readiness) {
         this.linkCache = linkCache;
         this.metrics = metrics;
         this.redisTemplate = redisTemplate;
+        this.readiness = readiness;
     }
 
     /**
@@ -69,7 +77,7 @@ public class LinkResolver {
                     return consumeQuota(shortCode, snapshot.maxClick())
                             .map(allowed -> allowed ? result : ResolveResult.quotaExceeded());
                 })
-                .defaultIfEmpty(ResolveResult.notFound())
+                .switchIfEmpty(Mono.defer(this::onCacheMiss))
                 .onErrorResume(CorruptCacheDataException.class, ex -> {
                     metrics.recordCorrupt();
                     log.error("corrupt cache entry, code={}, reason={}", shortCode, ex.getMessage());
@@ -85,6 +93,28 @@ public class LinkResolver {
                     log.error("unexpected error while resolving, code={}", shortCode, ex);
                     return Mono.just(ResolveResult.unavailable());
                 });
+    }
+
+    /**
+     * 缓存未命中时的出口。
+     *
+     * <p>就绪标志存在 → 缓存数据完整，这条短码确实不存在（404）；
+     * 标志缺失 → 可能是 Redis 被清空，判 503 并打点，交给告警和 rebuild 处理。</p>
+     *
+     * <p>注意不在这里打日志：Redis 真的空了的时候每个请求都会命中这段逻辑，
+     * 按请求打日志会先把日志系统打垮。状态变化由 {@link CacheReadiness} 的实现记录一次。</p>
+     */
+    private Mono<ResolveResult> onCacheMiss() {
+        boolean cacheReady = readiness.isReady();
+        if (!cacheReady) {
+            metrics.recordCacheNotReady();
+        }
+        return Mono.just(onMiss(cacheReady));
+    }
+
+    /** 纯函数，便于单测：就绪 → 404，未就绪 → 503。 */
+    static ResolveResult onMiss(boolean cacheReady) {
+        return cacheReady ? ResolveResult.notFound() : ResolveResult.unavailable();
     }
 
     /**

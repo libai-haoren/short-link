@@ -82,4 +82,16 @@ class LinkResolverTest {
         assertEquals(Outcome.FOUND,
                 LinkResolver.evaluate(snapshot("HTTPS://example.com", 1, 0), NOW).outcome());
     }
+
+    @Test
+    @DisplayName("缓存就绪：未命中就是真的不存在（404）")
+    void missIsNotFoundWhenCacheReady() {
+        assertEquals(Outcome.NOT_FOUND, LinkResolver.onMiss(true).outcome());
+    }
+
+    @Test
+    @DisplayName("缓存未就绪：未命中降级 503，而不是谎报 404")
+    void missFallsBackToUnavailableWhenCacheNotReady() {
+        assertEquals(Outcome.UNAVAILABLE, LinkResolver.onMiss(false).outcome());
+    }
 }

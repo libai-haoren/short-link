@@ -71,6 +71,12 @@ shortlink:
       enabled: ${CACHE_SYNC_ENABLED:true}
       # Pub/Sub 丢消息时的兜底：每秒比对一次全局版本号
       version-poll-interval: 1s
+    ready-gate:
+      # Redis 被 FLUSH / 空库启动时，未命中降级 503 而不是谎报 404。
+      # 关掉等于回到改造前的行为（miss 恒为 404），只留作灰度回退用。
+      enabled: ${READY_GATE_ENABLED:true}
+      # 标志变化后最长这么久生效；热路径只读一个 volatile 字段，不查 Redis
+      check-interval: 2s
     rate-limit:
       enabled: ${RATE_LIMIT_ENABLED:true}
       # 实例总入口：保护本机容量，超过这个 QPS 直接 429

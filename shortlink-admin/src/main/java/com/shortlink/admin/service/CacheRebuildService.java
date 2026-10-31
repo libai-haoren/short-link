@@ -83,6 +83,9 @@ public class CacheRebuildService {
             cursor = rows.get(rows.size() - 1).getId();
         }
 
+        // 先开闸门再通知失效：此刻 Redis 已灌满，未命中可以安全地判 404。
+        // 即使顺序反过来也无副作用，但先置位能缩短"数据齐了却还在返回 503"的窗口。
+        cacheWriter.markCacheReady();
         // 统一通知：版本号 +1 让漏收消息的实例也能自愈，EVICT_ALL 清掉所有 L1
         cacheWriter.markCacheChanged();
         cacheWriter.publishEvictAll();

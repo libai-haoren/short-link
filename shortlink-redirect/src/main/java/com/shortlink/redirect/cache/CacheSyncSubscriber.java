@@ -34,16 +34,19 @@ public class CacheSyncSubscriber implements SmartLifecycle {
     private final ReactiveRedisMessageListenerContainer container;
     private final LinkCache linkCache;
     private final RedirectMetrics metrics;
+    private final CacheVersionWatcher versionWatcher;
 
     private volatile Disposable subscription;
     private volatile boolean running;
 
     public CacheSyncSubscriber(ReactiveRedisMessageListenerContainer container,
                                LinkCache linkCache,
-                               RedirectMetrics metrics) {
+                               RedirectMetrics metrics,
+                               CacheVersionWatcher versionWatcher) {
         this.container = container;
         this.linkCache = linkCache;
         this.metrics = metrics;
+        this.versionWatcher = versionWatcher;
     }
 
     @Override
@@ -62,13 +65,16 @@ public class CacheSyncSubscriber implements SmartLifecycle {
         if (payload == null || payload.isBlank()) {
             return;
         }
+        // 先记账再做失效：这条消息"收到了"是版本号对账的依据，漏记会让兜底误判成丢消息
+        versionWatcher.onMessageReceived();
         if (CacheChannels.isEvictAll(payload)) {
             linkCache.invalidateAll();
-            metrics.cacheEvicted(true);
+            // 注意：这是"收到消息"触发的全清，不是版本号兜底，两者不能混计
+            metrics.cacheEvicted(RedirectMetrics.EvictSource.EVICT_ALL);
             log.info("received evict-all, local cache cleared");
         } else {
             linkCache.invalidate(payload);
-            metrics.cacheEvicted(false);
+            metrics.cacheEvicted(RedirectMetrics.EvictSource.PUBSUB);
         }
     }
 

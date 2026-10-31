@@ -44,6 +44,9 @@ public class LinkCacheWriter {
     /** 抖动上限 = 基础 TTL 的 10%。 */
     private static final long JITTER_SECONDS = BASE_TTL.toSeconds() / 10;
 
+    /** 就绪标志的写入值；消费方只判断 key 是否存在，值本身不参与逻辑。 */
+    private static final String CACHE_READY_VALUE = "1";
+
     private final StringRedisTemplate redisTemplate;
     private final int writeRetry;
     private final Counter writeFailure;
@@ -100,6 +103,22 @@ public class LinkCacheWriter {
     /** 递增全局版本号，让所有实例（含漏收 Pub/Sub 的）在 1s 内自愈。 */
     public void markCacheChanged() {
         redisTemplate.opsForValue().increment(CacheKeys.CACHE_VERSION);
+    }
+
+    /**
+     * 标记缓存已就绪：从这一刻起，redirect 才允许把"未命中"解释成"短链不存在"。
+     *
+     * <p>只能在全量数据已经灌进 Redis 之后调用（重建完成、或确认库里本来就没有短链）。
+     * 标志跟着 Redis 一起存活：进程重启不丢，Redis 被 FLUSH 就丢——正好对应
+     * "数据还在"和"数据没了"两种语义。</p>
+     */
+    public void markCacheReady() {
+        redisTemplate.opsForValue().set(CacheKeys.CACHE_READY, CACHE_READY_VALUE);
+    }
+
+    /** 就绪标志是否在位。启动引导用它判断要不要告警。 */
+    public boolean isCacheReady() {
+        return Boolean.TRUE.equals(redisTemplate.hasKey(CacheKeys.CACHE_READY));
     }
 
     /** 广播"这个短码失效了"。 */

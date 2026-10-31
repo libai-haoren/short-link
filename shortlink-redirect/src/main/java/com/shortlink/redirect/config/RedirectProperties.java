@@ -12,7 +12,8 @@ import java.time.Duration;
  * 同时保持不可变，避免运行期被误改。</p>
  */
 @ConfigurationProperties(prefix = "shortlink.redirect")
-public record RedirectProperties(L1 l1, CacheSync cacheSync, RateLimit rateLimit, Blacklist blacklist, Stats stats) {
+public record RedirectProperties(L1 l1, CacheSync cacheSync, RateLimit rateLimit, Blacklist blacklist,
+                                 Stats stats, ReadyGate readyGate) {
 
     /** 整个配置块缺失时兜底，避免 NPE。 */
     public RedirectProperties {
@@ -30,6 +31,9 @@ public record RedirectProperties(L1 l1, CacheSync cacheSync, RateLimit rateLimit
         }
         if (stats == null) {
             stats = new Stats(false, 8192, 200, "shortlink-dev-salt");
+        }
+        if (readyGate == null) {
+            readyGate = new ReadyGate(true, Duration.ofSeconds(2));
         }
     }
 
@@ -89,5 +93,19 @@ public record RedirectProperties(L1 l1, CacheSync cacheSync, RateLimit rateLimit
             @DefaultValue("8192") int queueSize,
             @DefaultValue("200") int batchSize,
             @DefaultValue("shortlink-dev-salt") String ipSalt) {
+    }
+
+    /**
+     * 缓存就绪闸门。
+     *
+     * <p>Redis 被清空 / 主从空切时，"未命中"不能当成"链接不存在"——那会让全站短链
+     * 静默地返回 404 且没有任何告警。只有 {@code sl:cache:ready} 存在时才判 404。</p>
+     *
+     * @param enabled       关掉后退化为"永远就绪"（改造前的行为），用于压测与灰度回退
+     * @param checkInterval 探测间隔；标志变化后最长这么久生效
+     */
+    public record ReadyGate(
+            @DefaultValue("true") boolean enabled,
+            @DefaultValue("2s") Duration checkInterval) {
     }
 }

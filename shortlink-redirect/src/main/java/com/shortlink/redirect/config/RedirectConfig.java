@@ -5,10 +5,12 @@ import com.shortlink.common.cache.IpBlacklist;
 import com.shortlink.common.cache.LocalCaches;
 import com.shortlink.common.mq.EventPublisher;
 import com.shortlink.component.ratelimit.LocalRateLimiter;
+import com.shortlink.redirect.cache.CacheReadiness;
 import com.shortlink.redirect.cache.CacheSyncSubscriber;
 import com.shortlink.redirect.cache.CacheVersionWatcher;
 import com.shortlink.redirect.cache.LinkCache;
 import com.shortlink.redirect.cache.LinkSnapshot;
+import com.shortlink.redirect.cache.RedisCacheReadiness;
 import com.shortlink.redirect.cache.RedisLinkCache;
 import com.shortlink.redirect.cache.TwoLevelLinkCache;
 import com.shortlink.redirect.metrics.RedirectMetrics;
@@ -54,11 +56,25 @@ public class RedirectConfig {
         return new TwoLevelLinkCache(localCache, redisCache, metrics);
     }
 
+    /**
+     * 缓存就绪判定：决定"未命中"是 404 还是 503。
+     *
+     * <p>它的 {@code isReady()} 会被热路径调用，所以只读一个 volatile 字段，
+     * 真正的 Redis 探测在后台定时跑。</p>
+     */
+    @Bean
+    public CacheReadiness cacheReadiness(ReactiveStringRedisTemplate redisTemplate,
+                                         RedirectProperties properties) {
+        RedirectProperties.ReadyGate gate = properties.readyGate();
+        return new RedisCacheReadiness(redisTemplate, gate.enabled(), gate.checkInterval());
+    }
+
     @Bean
     public LinkResolver linkResolver(LinkCache linkCache,
                                      RedirectMetrics metrics,
-                                     ReactiveStringRedisTemplate redisTemplate) {
-        return new LinkResolver(linkCache, metrics, redisTemplate);
+                                     ReactiveStringRedisTemplate redisTemplate,
+                                     CacheReadiness cacheReadiness) {
+        return new LinkResolver(linkCache, metrics, redisTemplate, cacheReadiness);
     }
 
     // ------------------------------------------------------------------
@@ -81,8 +97,11 @@ public class RedirectConfig {
             havingValue = "true", matchIfMissing = true)
     public CacheSyncSubscriber cacheSyncSubscriber(ReactiveRedisMessageListenerContainer container,
                                                    LinkCache linkCache,
-                                                   RedirectMetrics metrics) {
-        return new CacheSyncSubscriber(container, linkCache, metrics);
+                                                   RedirectMetrics metrics,
+                                                   CacheVersionWatcher cacheVersionWatcher) {
+        // 订阅端把"收到消息"告诉 watcher，watcher 才能和版本号增量对账，
+        // 从而只在真正丢消息时才全量失效
+        return new CacheSyncSubscriber(container, linkCache, metrics, cacheVersionWatcher);
     }
 
     @Bean
