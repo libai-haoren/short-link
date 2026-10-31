@@ -11,7 +11,7 @@
 
 ## 一句话总结
 
-这轮没有加功能，做的是五件事：**把"缓存挂了会怎样"从口头降级变成有代码的闸门**（A）、**修正两个会自我掩盖的指标与机制**（B 让兜底指标失真、C 让兜底每次写都触发）、**把 job 的清理从逐条往返改成按批 pipeline**（D）、**给缓存写入加版本号 CAS，关掉并发覆盖与回填竞态**（E）、**把文档里对不上实现的表述全部对齐**（F）。
+这轮没有加功能，做的是六件事：**把"缓存挂了会怎样"从口头降级变成有代码的闸门**（A）、**修正两个会自我掩盖的指标与机制**（B 让兜底指标失真、C 让兜底每次写都触发）、**把 job 的清理从逐条往返改成按批 pipeline**（D）、**给缓存写入加版本号 CAS，关掉并发覆盖与回填竞态**（E）、**把"redirect 不许有 Servlet/DB 依赖"从文档口号变成 CI 会失败的断言**（F）、**把文档里对不上实现的表述全部对齐**（G）。
 
 ---
 
@@ -115,7 +115,30 @@
 
 ---
 
-## F. 文档
+## F. 依赖红线断言落地
+
+**问题**：设计文档 3.2 写的是"CI 加一条 `mvn dependency:tree` 断言，违反即失败"，但仓库里既没有 CI 配置也没有脚本——这是唯一"文档说做了、实际没做"的约束，评审时一打开就穿帮。
+
+**改动**
+
+| 文件 | 内容 |
+|---|---|
+| `scripts/check-redirect-deps.ps1`（新） | 解析 redirect 依赖树，命中红线退出码 1，解析失败退出码 2 |
+| `scripts/check-redirect-deps.sh`（新） | 同逻辑的 bash 版本 |
+| `.github/workflows/ci.yml`（新） | push / PR 触发：JDK 17 + `mvn test` + 依赖红线检查（用 pwsh 跑，Actions 镜像自带） |
+| `shortlink-redirect/pom.xml` | 注释从"CI 会用断言"改为指向实际脚本 |
+
+**两个实现细节**
+
+1. 匹配用 `:artifact:` 而不是裸字符串——`spring-boot-starter-web` 是 `spring-boot-starter-webflux` 的前缀，裸匹配会把 WebFlux 自己判成违规；
+2. 解析失败必须退出 2 而不是 0——"跑不了"不能静默当成"通过"。
+
+**验证**：本地实跑两次。现状通过（103 行依赖、0 命中）；临时往 redirect 的 pom 注入 `spring-boot-starter-web` 后，脚本以退出码 1 报出 5 处违规（starter-web / spring-webmvc / tomcat-embed-core / tomcat-embed-el / tomcat-embed-websocket），随后已还原。
+⚠️ bash 版本在本机**未实跑**（系统只有被沙箱拒绝的 WSL bash）；CI 里执行的是 PowerShell 版本。
+
+---
+
+## G. 文档
 
 | 文件 | 改动 |
 |---|---|
@@ -130,6 +153,9 @@
 ```
 mvn -o -B test
 Reactor 20 个模块  BUILD SUCCESS
+
+powershell -ExecutionPolicy Bypass -File scripts/check-redirect-deps.ps1 -Offline
+PASS: shortlink-redirect 依赖树干净（103 行，无 Servlet / DB 依赖）
 ```
 
 新增/变更用例：`VersionGapTrackerTest` 7、`RedirectMetricsTest` 2、`RedisCacheReadinessTest` 2、`LinkResolverTest` +2、`LinkSnapshotTest` +3、`TwoLevelLinkCacheTest` +2、`LinkCleanupServiceTest` +1。
@@ -142,9 +168,8 @@ Reactor 20 个模块  BUILD SUCCESS
 |---|---|---|---|
 | 1 | redirect 没有熔断器 | Redis 持续不可用时每个 miss 仍付 50ms 超时 | 加熔断需处理"已恢复但仍在窗口"的问题，收益不大 |
 | 2 | Caffeine 单条 800B 是估算，未实测 | `maxSize` 可能过于保守（实际或 300~400B，可上调到 20 万） | 用 JOL 或 heap dump 校准，别在面试里当实测报 |
-| 3 | `dependency:tree` 断言只在 pom 注释和文档里 | "redirect 无 JDBC"目前靠自觉 | 在 CI/脚本里落地这条断言 |
-| 4 | `LocalCaches.hitRate()`、`TwoLevelLinkCache.estimatedSize()` 无调用方 | 死代码或待接 gauge | 接成 gauge 或删除 |
-| 5 | 失效水位依赖单机 `nanoTime` 与 30s 记忆窗口 | 时钟回拨/进程重启后水位失效，只影响极低概率的回填竞态 | 可接受；要更强改为"消息带版本号" |
+| 3 | `LocalCaches.hitRate()`、`TwoLevelLinkCache.estimatedSize()` 无调用方 | 死代码或待接 gauge | 接成 gauge 或删除 |
+| 4 | 失效水位依赖单机 `nanoTime` 与 30s 记忆窗口 | 时钟回拨/进程重启后水位失效，只影响极低概率的回填竞态 | 可接受；要更强改为"消息带版本号" |
 
 ---
 

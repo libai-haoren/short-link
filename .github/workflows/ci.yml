@@ -1,0 +1,32 @@
+name: CI
+
+on:
+  push:
+    branches: [ master, main ]
+  pull_request:
+
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Set up JDK 17
+        uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: '17'
+          cache: maven
+
+      - name: 编译与单元测试
+        run: mvn -B -ntp test
+
+      # 架构约束不能只写在文档里：redirect 一旦被引入 Servlet 栈或 JDBC，
+      # 就不再是"可以无脑扩副本的纯读服务"。脚本见 scripts/check-redirect-deps.ps1。
+      - name: redirect 依赖红线
+        shell: pwsh
+        run: ./scripts/check-redirect-deps.ps1

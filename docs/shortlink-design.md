@@ -173,7 +173,7 @@ shortlink                                  # 聚合 + 版本治理（父 POM 即
 
 | 规则 | 说明 |
 |---|---|
-| redirect 的依赖树里不允许出现 JDBC 驱动 | CI 加一条 `mvn dependency:tree` 断言，违反即失败。这是“无 DB 依赖”的硬保障，不是口号 |
+| redirect 的依赖树里不允许出现 Servlet 栈 / JDBC | `scripts/check-redirect-deps.ps1`（或 `.sh`）解析 `dependency:tree`，命中 `spring-boot-starter-web`、`tomcat-*`、`mybatis*`、`mysql-connector`、`shortlink-common-web` 即失败并以退出码 1 结束；`.github/workflows/ci.yml` 每次构建都跑。这是"无 DB 依赖"的硬保障，不是口号 |
 | common-core 不允许依赖 Spring Web / MyBatis | 保证任何服务引入它都不会被污染 |
 | 跨服务只走 HTTP/Feign 或 MQ，不共享数据库表 | admin 与 stats 各自库；stats 不回查 admin 的库 |
 | 发号器只在 admin 进程内使用 | redirect 绝不发号，避免号段竞争 |

@@ -16,7 +16,7 @@
     <description>读侧核心：短码解析 + 302 跳转，WebFlux 无 DB 依赖</description>
 
     <!--
-      ========== 依赖红线（CI 会用 dependency:tree 断言） ==========
+      ========== 依赖红线（scripts/check-redirect-deps.ps1 会断言，CI 里必跑） ==========
       禁止出现：
         spring-boot-starter-web        -> Tomcat + Servlet，与 WebFlux 冲突
         mybatis-plus / mysql-connector -> 破坏“无 DB 依赖”的部署形态
