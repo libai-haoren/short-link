@@ -609,7 +609,7 @@ com.shortlink.admin
 │   └── dto/       CreateLinkRequest, UpdateLinkRequest, LinkQuery, LinkView
 ├── mapper/        ShortLinkMapper, DomainMapper
 ├── config/        MybatisPlusConfig, ShortLinkCoreConfig
-└── support/       UrlValidator, LinkCacheWriter, ShortUrlAssembler
+└── support/       UrlValidator, LinkCacheWriter, ShortUrlAssembler, CacheReadinessBootstrap
 ```
 
 **实现顺序（严格按此顺序，每步可独立验证）**
@@ -626,6 +626,7 @@ com.shortlink.admin
 | 8 | 发 MQ `CacheSyncEvent`（含 version） | 缓存一致性 | V2 | ⬜ |
 | 9 | 批量导入（JSON 数组 → 逐条复用单条创建 → 返回失败明细） | 批量能力 | V4 | ✅ |
 | 10 | 操作日志（`t_operate_log`，before/after 快照） | 审计 | V4 | ✅ |
+| 11 | 缓存就绪标志：rebuild 完成后置位 + 空库启动引导 | redirect 能区分 404 / 503 | V2 | ✅ |
 
 **CRUD 实现中的四个决策**
 
@@ -701,7 +702,7 @@ public CreateLinkResponse create(CreateLinkRequest req, String idempotencyKey) {
 com.shortlink.redirect
 ├── web/       RedirectController, ErrorPage
 ├── service/   LinkResolver, ResolveResult
-├── cache/     LinkCache, RedisLinkCache, TwoLevelLinkCache, LinkSnapshot
+├── cache/     LinkCache, RedisLinkCache, TwoLevelLinkCache, LinkSnapshot, CacheReadiness, RedisCacheReadiness
 ├── metrics/   RedirectMetrics
 └── config/    RedirectProperties, RedirectConfig
 ```
@@ -724,7 +725,7 @@ GET /{code}
  ├─ 2. L1 Caffeine                       → 命中：跳 4
  ├─ 3. Redis HMGET [longUrl,status,expireTime,maxClick,domainId]
  │      ├─ 错误        → 503（cache_error 打点）
- │      ├─ 全 null     → 404
+ │      ├─ 全 null     → sl:cache:ready 在？→ 404 ：→ 503（cache_not_ready 打点）
  │      └─ 命中        → 回填 L1 → 跳 4
  ├─ 4. 状态判定（纯函数 evaluate）
  │      ├─ status != 1        → 403
@@ -734,12 +735,13 @@ GET /{code}
  └─ 5. 302 + Location + no-store + Content-Length: 0
 ```
 
-**与原设计的两处修正（重要）**
+**与原设计的三处修正（重要）**
 
 | 原设计 | 实际实现 | 原因 |
 |---|---|---|
 | 读链路前置布隆过滤器 | **移除** | 本地布隆要求"新短码在被访问前已加入过滤器"，而 admin 只能通过 MQ 同步。MQ 滞后窗口内会出现「Redis 已有、布隆没有」→ 真实短链被判 404。假阴性的代价远大于省一次 RTT；Redis 版布隆每次判定同样是一次 RTT，等于没省 |
 | Redis 空值缓存 `sl:link:null:` | **移除** | 空值缓存是为保护 DB；redirect 没有 DB。且空值 key 与主 key 都是同一次 RTT，省不了请求。防扫描靠格式校验 + V4 的限流 |
+| 未命中一律判 404 | **按 `sl:cache:ready` 区分 404 / 503** | Redis 被 FLUSH 或主从空切后所有 key 都不在，一律 404 等于给用户"链接不存在"的确定性结论且不告警。就绪标志缺失时降级 503 + `shortlink.cache.not_ready.total` 打点；标志由重建置位、空库启动时由 admin 引导置位 |
 
 > 这两个组件从 redirect 移除后，`component-bloom` / `component-ratelimit` 也从 redirect 的 POM 中删掉了，避免依赖树里躺着用不到的模块。
 
@@ -850,7 +852,7 @@ com.shortlink.stats.consumer
 
 **职责**：过期清理、缓存预热、统计对账、批量任务补偿。
 
-**当前内容**：启动类 + 数据源配置。
+**当前内容**：过期短链清理（分批软删 + 按批失效缓存）、审计归档、Redis 任务锁、手动触发接口。
 
 **实现顺序**
 
@@ -866,6 +868,8 @@ com.shortlink.stats.consumer
 
 - 每个任务都要能"多实例只跑一个"：用 Redis 分布式锁或 XXL-JOB 的路由策略
 - 清理任务必须**分批 + 限流**，不要一条 `DELETE ... WHERE` 扫全表
+- 缓存失效按批走一次 pipeline（DEL / INCR / PUBLISH），不要逐条三次往返；
+  **版本号必须与广播消息 1:1**，否则 redirect 的版本对账会把"只发消息不 bump"当成没丢、把"只 bump 不发消息"当成丢了
 - 预热任务要能断点续跑
 
 **验收标准**
@@ -992,9 +996,9 @@ mvn -q -pl shortlink-redirect dependency:tree -Dincludes=mysql:*,com.baomidou:*,
 | 2 | 版本矩阵未在线核对 | Boot/Cloud/Alibaba 三者错配会启动失败 | 升级前查官方兼容表；本项目基线 Boot 3.3.5 + Cloud 2023.0.3 + SCA 2023.0.3.2 |
 | 3 | redirect 错误页 vs JSON | 浏览器看到 JSON 很不专业 | redirect 单独实现 HTML 错误页（见 2.3 待办 2） |
 | 4 | 布隆不可删除、不可扩容 | 容量超限后误判率飙升 | 设计为"只增不删"；扩容走分层布隆（V2） |
-| 5 | 本地缓存多实例不一致 | 改短链后最长 1s 内可能读到旧值 | MQ 广播 + 全局版本号轮询双保险，明确接受秒级延迟 |
+| 5 | 本地缓存多实例不一致 | 改短链后最长约 2s 内可能读到旧值 | Pub/Sub 精确失效 + 版本号对账双保险，明确接受秒级延迟 |
 | 6 | 单机跑 6 个服务 | 16G 内存吃紧 | 本地只起 admin + redirect + 中间件，其余按需启动 |
-| 7 | 幂等组件第二个请求直接报错 | 体验差 | V4 改为"短暂等待首个请求结果" |
+| 7 | 幂等组件第二个并发请求 | 体验差 | ✅ 已实现：轮询等待首个请求的结果（最多 3s），失败时释放占位 |
 | 8 | 统计丢数据 | 报表偏差 | 队列满丢弃 + 打点告警 + 每日对账 |
 
 ### 需要你确认的两个决策

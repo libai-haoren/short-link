@@ -422,12 +422,13 @@ CREATE TABLE `t_stats_overview_daily` (
 
 ### 4.5 Redis Key 设计
 
-统一前缀 `sl:`，所有 key 必须带 TTL（除黑名单/号段）。
+统一前缀 `sl:`，所有 key 必须带 TTL（除黑名单 / 布隆位图 / 全局版本号）。
 
 | Key 模式 | 类型 | TTL | 用途 | 写入方 |
 |---|---|---|---|---|
-| `sl:link:{code}` | Hash | 24h ± 随机 10% | 短链核心元数据（longUrl/status/expireTime/maxClick/domainId） | admin / 预热 |
-| `sl:link:null:{code}` | String | 60s | 空值缓存，防穿透 | redirect |
+| `sl:link:{code}` | Hash | 24h + 0~10% 抖动 | 短链核心元数据，6 个字段，契约见 4.5.1 | admin / 预热 |
+| `sl:click:max:{code}` | String | 7d | 限流型短链的已访问计数（`INCR`），只有配了 `maxClick` 的短链才产生 | redirect |
+| ~~`sl:link:null:{code}`~~ | — | — | **已移除**：读链路没有 DB 要保护，空值 key 与主 key 是同一次 RTT，省不了请求（见 5.4.4） | — |
 | `sl:bloom:code` | String(Bitmap) | 永久（扩容时双写） | 短码布隆过滤器 | admin |
 | `sl:bloom:ip` | String(Bitmap) | 永久 | 黑名单 IP 布隆 | admin |
 | `sl:black:ip` | Set | 永久 | 精确黑名单（布隆误判时二次确认） | admin |
@@ -441,8 +442,30 @@ CREATE TABLE `t_stats_overview_daily` (
 | `sl:lock:{biz}:{id}` | String | 30s | 分布式锁（Redisson） | admin |
 | `sl:idem:{key}` | String | 24h | 接口幂等令牌 | admin |
 | `sl:cache:ver` | String | 永久 | 全局缓存版本号，丢弃 MQ 时的兜底 | admin |
+| `sl:cache:ready` | String | 永久 | 缓存就绪标志：存在才允许把"未命中"判成 404（见 5.4.5） | admin / rebuild |
 
-**编码约定**：key 用 `:` 分隔；value 统一 JSON（带 `_v` 版本字段便于灰度）；禁止大 key（单 value < 10KB，集合 < 5000）。
+**编码约定**：key 用 `:` 分隔、全小写，一律由 `CacheKeys` 生成（禁止业务代码拼字符串，否则"写得进去查不出来"）。
+value 按类型分工：**短链元数据用 Hash**（可单字段更新、只取需要的字段）、**计数与版本用 String**（`INCR`）、**黑名单用 Set**。
+数字一律存字符串，时间一律存 epoch 毫秒。禁止大 key（单 value < 10KB，集合 < 5000）。
+
+> 早期版本此处写的是"value 统一 JSON（带 `_v` 版本字段便于灰度）"，实现时改成了 Hash + 字段级读写：
+> JSON 需要整体替换，改一个字段就要"读-改-写"，并发下容易互相覆盖；Hash 用 `HSET` 只动目标字段。
+> 代价是字段名与顺序成了隐式契约，必须靠 4.5.1 的三处同步约定守住。
+
+#### 4.5.1 短链 Hash 的字段契约
+
+| 字段 | 编码 | 语义 |
+|---|---|---|
+| `longUrl` | 原样，含 query | 目标地址。必须以 `http(s)://` 开头，否则读侧判为数据损坏 → 503 |
+| `status` | `"1"` 启用 | **只有 1 是启用**，其它值一律按停用处理（fail-closed）→ 403 |
+| `expireTime` | epoch 毫秒；`"0"` = 永久 | 用毫秒而非日期字符串：避开时区问题与解析开销 |
+| `maxClick` | 整数；`0` = 不限 | 只有 `> 0` 时读侧才多付一次 `INCR` |
+| `domainId` | 整数 | redirect 不使用，保留用于排障 |
+| `shortCode` | 短码 | admin 写入，**读侧刻意不读**——它已经知道短码，多取一个字段只是浪费带宽 |
+
+> **三处必须同时改**：admin 的 `LinkCacheWriter`（写）、`RedisLinkCache.FIELDS`（读的字段与顺序）、`LinkSnapshot.parse`（解析顺序）。
+> 漏改任何一处，表现都是"部分短链 404"或"503 数据损坏"，且只影响改动之后新写入的那批，极难排查。
+> 读侧对五个字段**全部严格校验、不给默认值**：缺字段说明契约已经不一致，必须暴露而不是猜。
 
 ### 4.6 Kafka Topic 设计
 
@@ -656,12 +679,12 @@ class SegmentIdGenerator {
 
 | 问题 | 现象 | 方案 |
 |---|---|---|
-| **穿透** | 大量不存在的短码打到 Redis/DB | ① 布隆过滤器前置拦截（误判率 0.1%，`m = -n·ln p / (ln2)²`：**n=1000 万 → 约 1.44 亿 bit ≈ 18MB；n=1 亿 → 约 14.4 亿 bit ≈ 180MB**）② 空值缓存 60s |
+| **穿透** | 大量不存在的短码打到 Redis（读侧后面没有 DB） | ① 短码格式校验前置，非法直接 404、零 RTT ② 本地限流（V4）③ 布隆过滤器只用于 admin 侧批量导入预检，不进读链路（见 5.4.4）；误判率 0.1%，n=1000 万 → 约 18MB，n=1 亿 → 约 180MB |
 | **击穿** | 单个热点 key 过期瞬间并发回源 | ① 逻辑过期：value 内嵌 `expireAt`，读到过期值先返回旧值 + 异步刷新 ② singleflight 合并并发回源（Guava `Striped` 或手写 `ConcurrentHashMap<code, Future>`） |
-| **雪崩** | 大批 key 同时过期 / Redis 整体挂 | ① TTL 加随机抖动 ② 本地缓存兜底（Redis 挂了仍有 96% 命中）③ 熔断降级：Redis 超时 50ms 直接走本地 |
+| **雪崩** | 大批 key 同时过期 / Redis 整体挂 | ① TTL 加随机抖动 ② 本地缓存兜底（Redis 挂了仍有 ~95% 命中，但只维持一个 TTL 周期）③ 50ms 超时快速失败，绝不挂住事件循环（未做熔断，见 5.4.5 与第 10 节） |
 
 **布隆过滤器的两个坑**（面试高频）：
-1. **不支持删除**。短链有删除/封禁操作，布隆无法移除 → 解决方案：删除时不删布隆位（宁可误判为“可能存在”，让后续 Redis/空值缓存兜住），只删 `sl:link:{code}` 并写入 `sl:link:null:{code}`。
+1. **不支持删除**。短链有删除/封禁操作，布隆无法移除 → 只增不删：删除/封禁时不清布隆位，宁可误判为"可能存在"。读侧不用布隆（见 5.4.4），所以这个误判不会变成线上 404，只影响 admin 侧预检的准确率。
 2. **扩容**。固定位图无法扩容 → 用**可扩展布隆**（分层：每层容量翻倍，查询查所有层）或定期重建（双写新旧两份，切换后删旧）。
 
 #### 5.3.3 一致性方案（写路径，V2 已实现）
@@ -701,20 +724,37 @@ admin 写请求
 | 环节 | 延迟 | 兜底 |
 |---|---|---|
 | MySQL → Redis | 同步（同事务后） | 失败重试 3 次 + 指标告警；最终靠重建接口恢复 |
-| Redis → 本地缓存 | Pub/Sub 广播，毫秒级 | 全局版本号 `sl:cache:ver` 每秒轮询，版本变化则清空本地缓存 |
-| Pub/Sub 丢消息 | — | 版本号轮询 ≤1s 自愈 |
-| 极端不一致 | < 1s | 可接受：短链改长链不是资金业务，**明确写出"接受秒级最终一致"比假装强一致更专业** |
+| Redis → 本地缓存 | Pub/Sub 广播，毫秒级 | 全局版本号 `sl:cache:ver` 每秒对账，**发现版本增量与实收消息数不符**才清空本地缓存 |
+| Pub/Sub 丢消息 | — | 版本号对账 ≤2s 自愈（含一轮观察期） |
+| 极端不一致 | ≤2s | 可接受：短链改长链不是资金业务，**明确写出"接受秒级最终一致"比假装强一致更专业** |
 
 **版本号兜底机制**（防止 Pub/Sub 丢消息导致本地缓存永久脏）：
-```
-admin 每次写操作: INCR sl:cache:ver
-redirect 每 1s:  GET sl:cache:ver，与本地 lastVer 比较，不等则 invalidateAll()
-```
-代价是极端情况下全量失效一次，但 1 秒轮询成本可忽略。**这个"低科技兜底"比复杂方案更可靠，面试时说明取舍即可。**
 
-**缓存可恢复性**：Redis 是 redirect 的唯一数据源，重启/FLUSH 就等于全站 404。
-因此 admin 提供 `POST /api/v1/admin/cache/rebuild`：分页扫 MySQL → 重灌 Redis + 布隆 → 最后发一次"
-全部失效"。compose 里 Redis 同时开了 AOF（`appendonly yes`）作为第一道保险。
+每次写操作都让版本号 +1，并与一条失效消息**1:1 配对**：
+
+```
+写：   INCR sl:cache:ver   →   PUBLISH sl:cache-sync {code}
+轮询：每 1s（启动时加随机延迟，避免多实例同相位）
+        expected = 版本增量 + 上一轮未补齐的缺口
+        actual   = 这一轮实际收到的失效消息数
+        actual < expected → 先观察一轮（INCR 早于 PUBLISH，消息可能还在路上）
+                            连续两轮都补不上 → 判定真丢 → invalidateAll()
+```
+
+**为什么不是"版本一变就全清"**：早期实现就是那样，后果是每次正常写入都会让所有实例清空 10 万条 L1——精确失效被全清盖掉，命中率随写流量下降，批量导入更是灾难。
+
+现在正常写入**零代价**，只有真丢消息（实例重启、订阅断连）才全清；代价是发现时间从 1s 变成约 2s。判断逻辑抽在 `VersionGapTracker` 里，可脱离 Redis 单测。
+
+> 运维含义：`shortlink_cache_evict_total{source="version"}` 现在只在真丢消息时增长，可以放心拿它告警；改造前它会被正常写入刷高，完全失去信号价值。
+
+**写入口不止 admin**：job 清理过期短链时直接删 Redis，同样要 `DEL + INCR + PUBLISH` 三件套，
+否则 L1 会继续命中已下线的短链。清理按批走一次 pipeline，一批只付一次往返。
+
+> 完整的写链路步骤、失败模式矩阵与"为什么顺序不能乱"见 [写链路工作流程](./write-path.md)。
+
+**缓存可恢复性**：Redis 是 redirect 的唯一数据源，重启/FLUSH 就意味着全站链接不可达——若未命中一律判 404，表现出来就是"全站短链都不存在"。
+因此 admin 提供 `POST /api/v1/admin/cache/rebuild`：分页扫 MySQL → 重灌 Redis + 布隆 → 置位 `sl:cache:ready` → 发一次"全部失效"。
+重建完成前，未命中会被就绪标志降级成 503（见 5.4.5），而不是谎报 404。compose 里 Redis 同时开了 AOF（`appendonly yes`）作为第一道保险。
 
 ### 5.4 跳转链路（redirect 核心）
 
@@ -729,7 +769,9 @@ GET /{code}
   │      └─ 未命中 ↓
   ├─ 3. Redis HMGET sl:link:{code} [longUrl,status,expireTime,maxClick,domainId]
   │      ├─ 连接/超时错误 → 503（打点 cache_error）
-  │      ├─ 全为 null      → 404
+  │      ├─ 全为 null      → 看 sl:cache:ready（本机判定，最多 2s 滞后）
+  │      │                    ├─ 在   → 404（这条短码真的不存在）
+  │      │                    └─ 缺失 → 503 + 打点 cache_not_ready
   │      └─ 命中 → 回填 L1 → 跳 4
   ├─ 4. 状态判定（纯函数，无副作用）
   │      ├─ status != 1        → 403
@@ -741,7 +783,8 @@ GET /{code}
 
 **耗时预算**：L1 命中路径 < 1ms（纯内存），Redis 命中路径 < 3ms。**95% 以上的请求不应该碰到第 3 步之后的网络。**
 
-> 注意：布隆过滤器与 Redis 空值缓存已从读链路移除，原因见 [5.4.4](#544-两个被移除的组件实现后的修正)。
+> 注意：布隆过滤器与 Redis 空值缓存已从读链路移除，原因见 [5.4.4](#544-两个被移除的组件实现后的修正)；
+> Redis 不可用时的降级与恢复见 5.4.5。
 
 #### 5.4.2 响应细节
 
@@ -797,6 +840,46 @@ X-Trace-Id: 0af7651916cd43dd
 
 **由此产生的取舍**：V1 时 L1 没有主动失效机制，改链/封禁最长要等 TTL（默认 10 分钟）。
 **V2 已补齐**：Pub/Sub 实时失效 + 版本号轮询兜底，降到秒级以内（见 5.3.3）。
+
+#### 5.4.5 Redis 不可用时的降级与恢复
+
+redirect 没有 DB，Redis 就是唯一数据源。所以"Redis 挂了怎么办"必须按**四种形态**分别回答，笼统说"降级"是不及格的。
+
+| 形态 | 现象 | 处置 |
+|---|---|---|
+| **超时 / 抖动**（最常见） | 命令超过 `timeout: 50ms` | 抛 `CacheUnavailableException` → `UNAVAILABLE` → **503**（不是 404，不能骗用户"链接不存在"）；连接池 `max-wait: 50ms`，高并发下快速失败而非堆积 |
+| **进程挂 / 主从切换** | 连接断开 | Lettuce 自动重连；订阅端每 5s 重订阅，**断连期间的消息不补发**，由版本号轮询兜底；轮询单次失败只跳过这一轮，绝不终止 Flux（否则抖一次兜底就永久失效） |
+| **数据全丢**（FLUSH / 主从空切） | 全部 miss | AOF `everysec` + `POST /admin/cache/rebuild` 从 MySQL 预热；期间未命中由就绪标志降级 503，不再谎报 404 |
+| **内存满 / LRU 淘汰** | 热点被逐出 | `maxmemory 512mb` + `allkeys-lru`：短链缓存可从 MySQL 重建，宁可淘汰也不要写失败 |
+
+**降级边界要算准**（不能笼统说"扛得住"）：
+
+- Redis 挂掉后**头 10~12 分钟**，L1 命中的热点短链仍可正常跳转；TTL（10m + 0~2m 抖动）到期后没有新写入，命中率单调衰减到 0，随后全站 503。
+- 埋点队列满即丢，只丢统计不影响跳转；黑名单用最后一份 2s 快照，失效方向是"多放行"，不会误封。
+- 恢复 SOP：Redis 起（AOF 回放）→ rebuild 全量重灌 + 布隆 + `EVICT_ALL` → 观察 `shortlink.cache.write.failure` 与命中率回升。
+
+**404 与 503 必须能区分：就绪标志 `sl:cache:ready`（已实现）**
+
+问题：Redis 被 FLUSH 或主从空切后所有 key 都不在，未命中若一律判 404，等于给用户和搜索引擎"这条链接不存在"的确定性结论，而且不触发任何错误告警——这是最难被发现的一类事故。
+
+做法：admin 在**全量重建完成后**写入 `sl:cache:ready`；redirect 每 2s 探测一次，热路径只读本地 `volatile` 字段、不查 Redis：
+
+| 标志 | 未命中含义 | 响应 |
+|---|---|---|
+| 存在 | 缓存数据完整，这条短码真的不存在 | 404 |
+| 缺失 | 缓存可能被清空，无法区分 | **503** + `shortlink.cache.not_ready.total` |
+
+标志存在 Redis 里，所以"**进程重启不丢、Redis 被清空就丢**"，语义天然对齐。初始状态是**未就绪**（fail-closed），启动时先同步探一次再放流量，避免启动瞬间的空窗把所有未命中放成 404。
+
+置位时机与运维约定：
+
+1. `POST /api/v1/admin/cache/rebuild` 完成后置位；
+2. admin 启动时发现 `t_short_link` 为空（空库没有数据要预热），由启动引导直接置位，否则新部署的环境会把"查不存在的码"错判成服务不可用；
+3. **库里有数据但标志缺失 → 绝不置位**，只打一条 WARN。这说明 Redis 被清空过，必须人工重建——自动置位等于把"数据丢了"重新贴上"数据在"的标签。
+
+配置：`shortlink.redirect.ready-gate.enabled`（默认 true；关掉即退回 miss→404 的旧行为，留作灰度回退）、`check-interval`（默认 2s）；admin 侧 `shortlink.admin.cache.ready-bootstrap`。
+
+代价：重建完成前，所有"不存在的短码"都返回 503 而不是 404。这是刻意的取舍——**宁可承认服务不可用，也不要谎报链接不存在**。
 
 ### 5.5 统计链路
 
@@ -1076,17 +1159,42 @@ Content-Type: application/json
 | 日志 | Logback 异步 Appender，JSON 格式 | redirect **采样 1%**（全量打日志会拖垮性能），admin 全量 |
 | 告警 | Prometheus AlertManager（或 Grafana Alert） | 缓存命中率 < 90%、Kafka lag > 10w、CH 写入失败、5xx 率 > 0.1% |
 
-**自定义指标清单**（Grafana 面板直接体现工作量）
+**自定义指标清单**（按服务分组，与代码一一对应；Prometheus 侧 `.` 会被转成 `_`）
 
 ```
-shortlink_redirect_qps{code_type="hit_l1|hit_redis|miss"}
-shortlink_cache_hit_ratio
-shortlink_click_queue_size
-shortlink_click_drop_total
-shortlink_ratelimit_reject_total{scope="ip|code|global"}
-shortlink_stats_consume_lag
-shortlink_ch_insert_latency_seconds
+gateway
+  shortlink_gateway_ratelimit_rejected
+  shortlink_gateway_ratelimit_error
+  shortlink_gateway_blacklist_blocked
+redirect
+  shortlink_redirect_total{result="found|invalid|not_found|disabled|expired|quota_exceeded|unavailable"}
+  shortlink_cache_l1_total{result="hit|miss"}              # 命中率 = hit / (hit + miss)
+  shortlink_cache_evict_total{source="pubsub|evict_all|version"}
+  shortlink_cache_error_total
+  shortlink_cache_not_ready_total
+  shortlink_redirect_corrupt_total
+  shortlink_redirect_ratelimit_rejected
+  shortlink_click_tracked{result="published|dropped|failed"}
+  shortlink_redirect_latency{quantile="0.5|0.95|0.99"}
+admin
+  shortlink_cache_write_failure_total
+stats-consumer
+  shortlink_click_processed{result="ok|duplicate"}
+  shortlink_click_written
+  shortlink_click_write_failed
+  shortlink_click_buffer_rejected
+job
+  shortlink_job_cleaned
+  shortlink_job_audit_deleted
 ```
+
+**三条告警建议**（比"QPS 低"有用得多）：
+
+| 告警 | 含义 |
+|---|---|
+| `shortlink_cache_not_ready_total` 持续增长 | Redis 被清空 / 主从空切，需要跑 rebuild |
+| `shortlink_cache_evict_total{source="version"}` 持续增长 | Pub/Sub 在丢消息，订阅链路有问题（**注意与 `source="evict_all"` 区分：后者是重建的正常动作，前者才是故障**） |
+| L1 命中率 < 90% | 容量不足或误码扫描，先看 `maxSize` 与 `evict_all` 频率 |
 
 ### 7.2 容量估算
 
@@ -1199,7 +1307,7 @@ spring:
 | 阶段 | 内容 | 产出 | 预计工时 |
 |---|---|---|---|
 | **V1 能跑** | admin + redirect + MySQL + Redis，单机跑通创建/跳转 | 可演示的闭环 | 3~4 天 |
-| **V2 快** | Caffeine 本地缓存 + 布隆 + 空值缓存 + 号段发号 + FPE | 压测报告：P99 从 8ms → 1ms | 3 天 |
+| **V2 快** | Caffeine 本地缓存 + Pub/Sub 失效 + 号段发号 + FPE（布隆与空值缓存实现后移除，见 5.4.4） | 压测报告：P99 从 8ms → 1ms | 3 天 |
 | **V3 有数据** | Kafka + stats-consumer + ClickHouse + 实时 PV/UV | 统计看板 | 4 天 |
 | **V4 稳** | 网关 + JWT + 限流 + 风控 + 可观测性 + 幂等 | 完整的生产形态 | 4 天 |
 | **V5 深** | Canal 缓存同步 + 全局版本号兜底 + 分片方案 + 混沌演练 | 简历差异化 | 5 天 |
@@ -1216,12 +1324,12 @@ spring:
 
 | 决策 | 取舍 | 缓解 |
 |---|---|---|
-| redirect 不连 MySQL | 数据只能来自 Redis/本地缓存，无法回源 | Canal 兜底 + 全局版本号 + 预热 |
+| redirect 不连 MySQL | 数据只能来自 Redis/本地缓存，无法回源 | rebuild 预热（已实现）+ 全局版本号 + Canal 兜底（V5，未实现） |
 | 302 而非 301 | 每次请求都回源，服务器压力大 | 本地缓存 + 短 TTL 可选（接受统计损失） |
-| 本地缓存 | 多实例数据可能短暂不一致 | MQ 广播 + 版本号轮询，接受 < 1s 延迟 |
+| 本地缓存 | 多实例数据可能短暂不一致 | Pub/Sub 精确失效 + 版本号对账，接受 ≤2s 延迟 |
 | 本地限流 | 集群维度阈值不精确 | 网关做全局精确限流，本地只保容量 |
 | 统计异步 | 可能丢数据 | 队列满丢弃 + 对账（CH 与 Redis 每日比对） |
-| 布隆过滤器 | 不可删除、误判 | 只标记不删除 + 空值缓存兜底 |
+| 布隆过滤器 | 不可删除、误判 | 只标记不删除；读链路不用布隆，误判不会变成 404；仅在 admin 侧做预检 |
 | 单表起步 | 数据量到亿级需迁移 | 预留 ShardingSphere 配置，压测验证分片方案 |
 | 5 个服务 | 运维/调试成本高 | docker-compose 一键起，本地单副本 |
 
@@ -1230,6 +1338,7 @@ spring:
 2. 跨机房多活未设计，短码发号器是全局单点。
 3. 精确 UV 需要明细全量扫描，超大流量下应改为 HLL + 抽样校验。
 4. 恶意短链的自动化识别（模型/第三方 API）未实现，仅静态黑名单。
+5. redirect 没有熔断器：Redis 持续不可用时每个 miss 仍付 50ms 超时，而非立即失败；加熔断要处理"已恢复但仍在熔断窗口"的问题。
 
 ---
 
@@ -1239,10 +1348,11 @@ spring:
 |---|---|---|
 | 短码生成 | 为什么不用自增 ID？ | 可枚举、泄露业务量；用 FPE 混淆且保持双射 |
 | 7 位 Base62 | 容量多大？ | 3.52 万亿；初始号段设为 62^6 保证恰好 7 位 |
-| 布隆过滤器 | 误判/删除/扩容怎么办？ | 误判靠空值缓存兜底；不支持删除所以只增不删；扩容用分层布隆 |
-| 缓存三件套 | 穿透/击穿/雪崩分别怎么解？ | 布隆+空值 / 逻辑过期+singleflight / 随机 TTL+本地兜底 |
-| 一致性 | MySQL 改了 Redis 怎么同步？ | 写时更新（不是删除）+ MQ 广播 + Canal 兜底 + 版本号轮询 |
-| redirect 无 DB | 缓存没命中怎么办？ | 布隆挡 + 空值缓存 + 异步回源；明确接受 404 而不是回源 DB |
+| 布隆过滤器 | 误判/删除/扩容怎么办？ | 读链路已移除布隆（滞后窗口会误判真链为 404）；不支持删除所以只增不删；扩容用分层布隆 |
+| 缓存三件套 | 穿透/击穿/雪崩分别怎么解？ | 格式校验+限流 / 逻辑过期+singleflight / 随机 TTL+本地兜底；**布隆与空值缓存在读链路已移除**，理由是读侧没有 DB |
+| 缓存就绪 | Redis 被清空后怎么区分"链接不存在"和"服务不可用"？ | `sl:cache:ready` 标志位：重建完成才置位，缺失时未命中一律降级 503 并打点，把静默的数据事故变成可告警的可用性事故 |
+| 一致性 | MySQL 改了 Redis 怎么同步？ | 写时更新（不是删除）+ Pub/Sub 精确失效 + 版本号对账兜底 + Canal（V5） |
+| redirect 无 DB | 缓存没命中怎么办？ | 格式校验先挡；miss 就是 404，**没有异步回源**（这是刻意的）；数据丢失场景的 404 是已知缺陷，见 5.4.5 |
 | 302 vs 301 | 为什么不用 301？ | 301 被浏览器缓存，改不了链、统计不到、封禁无效 |
 | 限流 | 为什么本地限流？ | 零网络开销、Redis 挂也不失效；集群精确限流放网关 |
 | 统计 | 怎么保证不拖慢跳转？ | 有界队列 + 异步批量 + 满则丢弃，跳转优先 |

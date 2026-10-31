@@ -4,6 +4,8 @@
 
 - 设计文档：[docs/shortlink-design.md](docs/shortlink-design.md)
 - 模块实现规划：[docs/module-plan.md](docs/module-plan.md)
+- 写链路工作流程：[docs/write-path.md](docs/write-path.md)
+- 变更记录：[docs/changelog.md](docs/changelog.md)
 
 ## 模块一览
 
@@ -242,7 +244,8 @@ curl -X POST 'http://127.0.0.1:8082/api/v1/links/{gid}/enable'
 ```
 
 > **改完是秒级生效**：admin 写完 Redis 会 `INCR sl:cache:ver` 并 `PUBLISH sl:cache-sync`，redirect 订阅后立即失效本地缓存。
-> 万一消息丢了，还有每秒一次的版本号轮询兜底。见 [docs/module-plan.md](docs/module-plan.md) 的 V2 说明。
+> 万一消息丢了，版本号轮询会拿"版本增量"和"实收消息数"对账，对不上才全量失效（≤2s）。
+> 细节见 [docs/shortlink-design.md](docs/shortlink-design.md) 的 5.3.3。
 
 **缓存重建**（Redis 重启/被清空后恢复，否则全站 404）：
 
