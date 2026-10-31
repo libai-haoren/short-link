@@ -78,10 +78,9 @@ public class LinkCleanupService {
             affectedTotal += affected;
             batches++;
 
-            // 删完立刻失效缓存：Redis 主缓存 + Pub/Sub 通知 redirect 清 L1
-            for (LinkStore.ExpiredLink link : batch) {
-                cacheEvictor.evict(link.shortCode());
-            }
+            // 删完立刻失效缓存：Redis 主缓存 + Pub/Sub 通知 redirect 清 L1。
+            // 按批走一次 pipeline，而不是逐条三次网络往返
+            cacheEvictor.evictBatch(batch.stream().map(LinkStore.ExpiredLink::shortCode).toList());
             cleanedCounter.increment(affected);
 
             if (batch.size() < batchSize) {

@@ -53,6 +53,21 @@ class LinkCleanupServiceTest {
         }
     }
 
+    /** 只走批量路径的桩：用来钉住"一批一次调用"，防止哪天又被改成逐条发消息。 */
+    static class FakeBatchEvictor implements CacheEvictor {
+        final List<List<String>> calls = new ArrayList<>();
+
+        @Override
+        public void evict(String shortCode) {
+            throw new AssertionError("清理任务不该走逐条失效");
+        }
+
+        @Override
+        public void evictBatch(List<String> shortCodes) {
+            calls.add(List.copyOf(shortCodes));
+        }
+    }
+
     private static List<LinkStore.ExpiredLink> batch(int size) {
         List<LinkStore.ExpiredLink> list = new ArrayList<>(size);
         for (int i = 0; i < size; i++) {
@@ -134,5 +149,20 @@ class LinkCleanupServiceTest {
 
         assertTrue(result.completed());
         assertEquals(1, store.callCount, "不满一批就不该再查第二次");
+    }
+
+    @Test
+    @DisplayName("按批失效：两批数据只调用两次，不逐条发消息")
+    void evictsOncePerBatch() {
+        FakeStore store = new FakeStore();
+        store.batches.add(batch(2));
+        store.batches.add(batch(1));
+        FakeBatchEvictor evictor = new FakeBatchEvictor();
+
+        service(store, evictor, 2, 10).cleanup(NOW);
+
+        assertEquals(2, evictor.calls.size(), "每批一次批量失效");
+        assertEquals(List.of("code0", "code1"), evictor.calls.get(0));
+        assertEquals(List.of("code0"), evictor.calls.get(1));
     }
 }
