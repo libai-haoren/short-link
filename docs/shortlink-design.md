@@ -46,7 +46,7 @@
 | 本地缓存 | Caffeine | 3.1.x | W-TinyLFU 命中率优于 LRU，redirect 的核心武器 | Guava Cache（已弱维护） |
 | 消息队列 | Kafka | 3.7（KRaft 模式） | 点击流高吞吐、可回放、分区有序；个人项目部署比 RocketMQ 轻 | RocketMQ（广播消费更顺手，但需 NameServer，运维重）；RabbitMQ（吞吐不够） |
 | 实时数仓 | ClickHouse | 24.x | 亿级明细秒级聚合，UV 精确去重 `uniqExact`，报表场景碾压 MySQL | ES（聚合慢、存储贵）、Doris（也可，但 CH 单机 Docker 更轻） |
-| 缓存同步 | Canal | 1.1.8 | 订阅 MySQL binlog，解耦“写库”与“刷缓存”，是最终一致的兜底 | 纯双写（丢消息就永久不一致） |
+| 缓存同步 | Redis Pub/Sub（主）+ Canal（V5，补写与对账） | 随 Boot / 1.1.8 | 日常失效走 Pub/Sub：毫秒级、零新增组件、可被版本号对账兜底；Canal 只补"写缓存失败"和"绕过应用直改库"两个盲区（见 4.6.1） | 只用 Canal：延迟 100ms~2s，且位点丢失后无兜底 |
 | 调度 | XXL-JOB | 2.4.x | 过期清理、缓存预热、统计补偿、对账 | Quartz（无控制台、无失败重试） |
 | 链路追踪 | Micrometer Tracing + OTel / SkyWalking | — | TraceId 全链路透传（HTTP + Feign + Kafka Header） | 只打日志不串链路（面试一问就露馅） |
 | 指标监控 | Micrometer + Prometheus + Grafana | — | QPS/RT/命中率/消费 lag 可视化，压测报告的数据来源 | — |
@@ -478,9 +478,49 @@ value 按类型分工：**短链元数据用 Hash**（可单字段更新、只�
 | `sl-click-dlt` | 8 | 2 | `short_code` | 7d | stats-consumer | 人工/补偿 job |
 
 > **缓存同步不走 Kafka**：V2 实现时改用 Redis Pub/Sub（频道 `sl:cache-sync`），
-> 理由见 5.3.3。Kafka 只承载需要分区有序与回放能力的点击流。
+> 理由见 5.3.3。Kafka 只承载需要分区有序与回放能力的点击流；binlog 路线（Canal）见 4.6.1。
 
 **广播消费怎么实现**：Kafka 没有 RocketMQ 的广播模式，让每个 redirect 实例使用**唯一 groupId**（`redirect-{ip}-{pid}`，启动时生成），并通过 `assign()` 消费全部分区——这样每个实例都能收到全量消息。缺点是 offset 提交无意义，改成 `enable.auto.commit=false` + 定期 seek 到最新，或直接不提交（重启从头消费最后 1 小时数据，正好当预热）。**这个细节面试官很爱问，答得出来就是加分项。**
+
+#### 4.6.1 为什么主通道不是 Canal（以及它真正的定位）
+
+看到 `sl-link-change` 这个 topic，一定会被问：既然有 binlog，为什么缓存失效还要应用侧发 Pub/Sub？
+
+| 维度 | Pub/Sub（现状） | Canal + binlog |
+|---|---|---|
+| 时机 | **事前**主动通知 | **事后**嗅探 |
+| 延迟 | 毫秒级 | 100ms ~ 2s（binlog 落盘 → 解析 → 投递 → 消费） |
+| 覆盖 | 只有走应用代码的写入 | **所有**写入，含 DBA 手工改库 |
+| 依赖 | Redis 自带 | 独立组件 + REPLICATION 权限 + ROW 格式 + 位点管理 |
+| 出故障后 | 版本号对账 + TTL 两层兜底 | 位点丢了就是永久不一致 |
+
+不拿它做主通道的四条理由：
+
+1. **延迟**：改链立即生效是核心体验，Canal 链路天然慢一个数量级；
+2. **复杂度**：Canal Server + 位点存储 + 主从切换后的位点重建 + DDL 兼容，个人项目不该再加一个中间件；
+3. **写入口可控**：缓存只可能被 `LinkCacheWriter.put()`（admin）和 `RedisCacheEvictor`（job）改，都在自己代码里——主动通知比事后嗅探更直接，也不用从 row 反解"该失效哪个 code"；
+4. **故障面**：Canal 挂掉没有任何"再对一次账"的机会，而现状有三层收敛（Pub/Sub → 版本号对账 → TTL）。
+
+**它真正的价值是补两个洞**（V5 再做，是补强不是替代）：
+
+| 洞 | 现状 | Canal 能怎样 |
+|---|---|---|
+| DB 写成功、Redis 写失败 | 重试 + 告警 + 人工 rebuild，期间短链打不开 | binlog 里能看到这次 commit，自动补写 |
+| 绕过 admin 直改库 | 完全无感知，脏到 TTL | 捕获变更并触发失效 |
+
+**如果真接，正确姿势是先回写 Redis 再发失效，而不是让每个 redirect 直接消费 binlog**：
+
+```
+MySQL binlog → Canal → Kafka sl-link-change
+                          → admin / 独立的 cache-sync 服务
+                              ① 带版本号 CAS 重写 Redis
+                              ② PUBLISH sl:cache-sync 失效
+                          → redirect 各实例 invalidate L1
+```
+
+两个原因：① redirect 要保持"可以无脑扩副本的纯读服务"，不该再背 Kafka 消费者与位点管理；② Kafka 没有原生广播，让 N 个实例各拿独立 groupId 再 `assign()` 全分区，复杂度比 Pub/Sub 高一个量级——而绕完这一圈，最后还是回到 `publishEvict`。
+
+> 一句话：**用 Canal 替代 Pub/Sub，是拿一个数量级的延迟换十倍以上的复杂度。** 只有写入口不可控、或下游多到值得统一分发时才划算。
 
 ### 4.7 ClickHouse DDL
 
@@ -1317,13 +1357,13 @@ spring:
 | **V2 快** | Caffeine 本地缓存 + Pub/Sub 失效 + 号段发号 + FPE（布隆与空值缓存实现后移除，见 5.4.4） | 压测报告：P99 从 8ms → 1ms | 3 天 |
 | **V3 有数据** | Kafka + stats-consumer + ClickHouse + 实时 PV/UV | 统计看板 | 4 天 |
 | **V4 稳** | 网关 + JWT + 限流 + 风控 + 可观测性 + 幂等 | 完整的生产形态 | 4 天 |
-| **V5 深** | Canal 缓存同步 + 全局版本号兜底 + 分片方案 + 混沌演练 | 简历差异化 | 5 天 |
+| **V5 深** | Canal 补写与对账 + 分片方案 + 混沌演练 | 简历差异化 | 5 天 |
 
 **每个阶段的简历素材**
 - V2：`引入两级缓存，命中率 96.3%，P99 8.2ms → 1.1ms，单机 QPS 1.2w → 5.8w`
 - V3：`点击流异步化，Kafka 削峰，CH 明细查询 1000 万行聚合 300ms 内`
 - V4：`网关统一鉴权限流，拦截恶意请求 12%，风控拦截非法长链 300+`
-- V5：`Canal 订阅 binlog + MQ 广播，缓存一致性延迟 < 100ms，MySQL 宕机跳转服务零影响`
+- V5：`Canal 订阅 binlog 补写缓存，覆盖"写缓存失败"与"绕过应用直改库"两个盲区；失效主通道仍是毫秒级 Pub/Sub`
 
 ---
 
